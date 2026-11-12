@@ -65,7 +65,7 @@
 <section class="playtime-owners">
   <div class="header">
     <div>
-      <h2>Playtime and estimated owners</h2>
+      <h2>Playtime and Review Count</h2>
       <!-- <p class="subtitle">Select a price range to highlight its games.</p> -->
        <br/>
     </div>
