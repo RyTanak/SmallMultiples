@@ -10,6 +10,7 @@
   import ParallelCoords from "$lib/CarlVis/ParallelCoords.svelte";
   import SplitGenreReviews from "$lib/CarlVis/SplitGenreReviews.svelte";
   import PriceTrend from "$lib/CarlVis/PriceTrend.svelte";
+  import Glyphs from "$lib/EricVis/Glyphs.svelte";
   import type { SteamGame } from "../types";
 
   let games: SteamGame[] = $state([]);
@@ -80,9 +81,6 @@
   <Bar {games} />
   <Bump {games} />
   <Heatmap {games} />
-  <Scatter {games} />
-  <A2_4 {games} />
-  <Line {games} />
   <Ridgeline {games} />
   <ParallelCoords {games} />
   <SplitGenreReviews {games} />
