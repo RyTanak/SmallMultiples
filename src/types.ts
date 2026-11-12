@@ -28,4 +28,5 @@
   achievements: number;
   short_description: string;
   header_image: string;
+  price_no_sales: number;
 };

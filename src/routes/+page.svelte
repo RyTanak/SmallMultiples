@@ -66,7 +66,8 @@
       dlc_count: parseRequiredNumber(row.dlc_count),
       achievements: parseRequiredNumber(row.achievements),
       short_description: row.short_description ?? '',
-      header_image: row.header_image ?? ''
+      header_image: row.header_image ?? '',
+      price_no_sales: parseRequiredNumber(row.price_usd)  / (1 - parseRequiredNumber(row.discount_pct) / 100)
     })) as SteamGame[];
   });
 </script>
