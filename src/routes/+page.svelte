@@ -8,6 +8,9 @@
   import A2_4 from '$lib/EricVis/A2_4.svelte';
   import Line from '$lib/EricVis/Line.svelte';
   import Ridgeline from '$lib/CarlVis/Ridgeline.svelte';
+  import ParallelCoords from '$lib/CarlVis/ParallelCoords.svelte';
+  import SplitGenreReviews from '$lib/CarlVis/SplitGenreReviews.svelte';
+  import PriceTrend from '$lib/CarlVis/PriceTrend.svelte';
   import type { SteamGame } from '../types';
 
   let games: SteamGame[] = $state([]);
@@ -74,4 +77,7 @@
   <A2_4 {games} />
   <Line {games} />
   <Ridgeline {games} />
+  <ParallelCoords {games} />
+  <SplitGenreReviews {games} />
+  <PriceTrend {games} />
 </main>
