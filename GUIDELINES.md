@@ -4,7 +4,7 @@
 
 - `src/routes/+page.svelte` is the only application integration point. It loads `/steam_top_games_2026-selected-columns.csv` once, parses every CSV field, and passes the resulting `SteamGame[]` to visualizations.
 - Keep `src/app.html` as the SvelteKit document shell and keep `src/routes/+layout.svelte` limited to shared page behavior such as the favicon.
-- The shared data contract is `SteamGame` in `src/types.ts`. Dates are `Date` objects, numeric fields are numbers, booleans are booleans, and `genres` is a trimmed string array.
+- The shared data contract is `SteamGame` in `src/types.ts`. Dates are `Date | null`, nullable numeric values are represented as `number | null`, other numeric fields are numbers, booleans are booleans, and comma-separated fields are trimmed string arrays.
 
 ## Visualization ownership
 
@@ -17,6 +17,7 @@
 ## Data and routes
 
 - The browser-facing CSV is `static/steam_top_games_2026-selected-columns.csv`; do not reintroduce `static/summer_movies.csv` or movie-only fields such as runtime, rating, votes, or title IDs.
+- The parser currently covers identity, release status, pricing, taxonomy, platform support, review metrics, ownership, playtime, community counts, descriptions, and image URLs from the CSV.
 - Keep the root route as the single page. Do not add individual visualization routes unless the project requirements change.
 - If the dataset schema changes, update the parser and `SteamGame` together, then update all affected visualizations.
 

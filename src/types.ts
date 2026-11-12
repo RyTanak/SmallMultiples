@@ -1,7 +1,7 @@
 ﻿export type SteamGame = {
   app_id: number;
   name: string;
-  release_date: Date;
+  release_date: Date | null;
   coming_soon: boolean;
   price_usd: number;
   is_free: boolean;
@@ -9,4 +9,23 @@
   developer: string;
   publisher: string;
   genres: string[];
+  categories: string[];
+  tags: string[];
+  platforms_win: boolean;
+  platforms_mac: boolean;
+  platforms_linux: boolean;
+  metacritic_score: number | null;
+  recommendations: number;
+  positive_reviews: number;
+  negative_reviews: number;
+  estimated_owners: string;
+  avg_playtime_forever: number;
+  avg_playtime_2weeks: number;
+  median_playtime: number;
+  peak_ccu: number;
+  required_age: number;
+  dlc_count: number;
+  achievements: number;
+  short_description: string;
+  header_image: string;
 };
