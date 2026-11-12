@@ -4,6 +4,8 @@
   import Bar from '$lib/RyotaVis/Bar.svelte';
   import Bump from '$lib/RyotaVis/Bump.svelte';
   import Heatmap from '$lib/RyotaVis/Heatmap.svelte';
+  import GPHeatmap from '$lib/RyotaVis/GPHeatmap.svelte';
+  import PLPScatter from '$lib/RyotaVis/PLPScatter.svelte';
   import Scatter from '$lib/EricVis/Scatter.svelte';
   import A2_4 from '$lib/EricVis/A2_4.svelte';
   import Line from '$lib/EricVis/Line.svelte';
@@ -70,8 +72,12 @@
   <Bar {games} />
   <Bump {games} />
   <Heatmap {games} />
+  <GPHeatmap {games} />
+  <PLPScatter {games} />
   <Scatter {games} />
   <A2_4 {games} />
   <Line {games} />
   <Ridgeline {games} />
 </main>
+
+
