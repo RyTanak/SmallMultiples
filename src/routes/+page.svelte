@@ -1,26 +1,28 @@
 ﻿<script lang="ts">
-  import * as d3 from 'd3';
-  import { onMount } from 'svelte';
-  import Bar from '$lib/RyotaVis/Bar.svelte';
-  import Bump from '$lib/RyotaVis/Bump.svelte';
-  import Heatmap from '$lib/RyotaVis/Heatmap.svelte';
-  import GPHeatmap from '$lib/RyotaVis/GPHeatmap.svelte';
-  import PLPScatter from '$lib/RyotaVis/PLPScatter.svelte';
-  import Scatter from '$lib/EricVis/Scatter.svelte';
-  import A2_4 from '$lib/EricVis/A2_4.svelte';
-  import Line from '$lib/EricVis/Line.svelte';
-  import Ridgeline from '$lib/CarlVis/Ridgeline.svelte';
-  import ParallelCoords from '$lib/CarlVis/ParallelCoords.svelte';
-  import SplitGenreReviews from '$lib/CarlVis/SplitGenreReviews.svelte';
-  import PriceTrend from '$lib/CarlVis/PriceTrend.svelte';
-  import type { SteamGame } from '../types';
+  import * as d3 from "d3";
+  import { onMount } from "svelte";
+  import Bar from "$lib/RyotaVis/Bar.svelte";
+  import Bump from "$lib/RyotaVis/Bump.svelte";
+  import Heatmap from "$lib/RyotaVis/Heatmap.svelte";
+  import GPHeatmap from "$lib/RyotaVis/GPHeatmap.svelte";
+  import PLPScatter from "$lib/RyotaVis/PLPScatter.svelte";
+  import Ridgeline from "$lib/CarlVis/Ridgeline.svelte";
+  import ParallelCoords from "$lib/CarlVis/ParallelCoords.svelte";
+  import SplitGenreReviews from "$lib/CarlVis/SplitGenreReviews.svelte";
+  import PriceTrend from "$lib/CarlVis/PriceTrend.svelte";
+  import Glyphs from "$lib/EricVis/Glyphs.svelte";
+  import type { SteamGame } from "../types";
 
   let games: SteamGame[] = $state([]);
 
   const parseList = (value: string | undefined) =>
-    value?.split(',').map((item) => item.trim()).filter(Boolean) ?? [];
+    value
+      ?.split(",")
+      .map((item) => item.trim())
+      .filter(Boolean) ?? [];
 
-  const parseBoolean = (value: string | undefined) => value?.toLowerCase() === 'true';
+  const parseBoolean = (value: string | undefined) =>
+    value?.toLowerCase() === "true";
 
   const parseNumber = (value: string | undefined) => {
     if (!value?.trim()) return null;
@@ -28,7 +30,8 @@
     return Number.isFinite(parsed) ? parsed : null;
   };
 
-  const parseRequiredNumber = (value: string | undefined) => parseNumber(value) ?? 0;
+  const parseRequiredNumber = (value: string | undefined) =>
+    parseNumber(value) ?? 0;
 
   const parseDate = (value: string | undefined) => {
     if (!value?.trim()) return null;
@@ -76,15 +79,11 @@
   <Bar {games} />
   <Bump {games} />
   <Heatmap {games} />
-  <GPHeatmap {games} />
-  <PLPScatter {games} />
-  <Scatter {games} />
-  <A2_4 {games} />
-  <Line {games} />
   <Ridgeline {games} />
   <ParallelCoords {games} />
   <SplitGenreReviews {games} />
   <PriceTrend {games} />
+  <GPHeatmap {games} />
+  <PLPScatter {games} />
+  <Glyphs {games} />
 </main>
-
-
