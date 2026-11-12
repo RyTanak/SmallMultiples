@@ -4,11 +4,12 @@
   import Bar from "$lib/RyotaVis/Bar.svelte";
   import Bump from "$lib/RyotaVis/Bump.svelte";
   import Heatmap from "$lib/RyotaVis/Heatmap.svelte";
+  import GPHeatmap from "$lib/RyotaVis/GPHeatmap.svelte";
+  import PLPScatter from "$lib/RyotaVis/PLPScatter.svelte";
   import Ridgeline from "$lib/CarlVis/Ridgeline.svelte";
   import ParallelCoords from "$lib/CarlVis/ParallelCoords.svelte";
   import SplitGenreReviews from "$lib/CarlVis/SplitGenreReviews.svelte";
   import PriceTrend from "$lib/CarlVis/PriceTrend.svelte";
-  import Glyphs from "$lib/EricVis/Glyphs.svelte";
   import type { SteamGame } from "../types";
 
   let games: SteamGame[] = $state([]);
@@ -79,11 +80,12 @@
   <Bar {games} />
   <Bump {games} />
   <Heatmap {games} />
+  <Scatter {games} />
+  <A2_4 {games} />
+  <Line {games} />
   <Ridgeline {games} />
   <ParallelCoords {games} />
   <SplitGenreReviews {games} />
   <PriceTrend {games} />
   <Glyphs {games} />
 </main>
-
-<!-- https://www.kaggle.com/datasets/patelris/steam-top-1495-games-dataset -->
