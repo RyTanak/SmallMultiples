@@ -85,5 +85,7 @@
   <ParallelCoords {games} />
   <SplitGenreReviews {games} />
   <PriceTrend {games} />
+  <GPHeatmap {games} />
+  <PLPScatter {games} />
   <Glyphs {games} />
 </main>
