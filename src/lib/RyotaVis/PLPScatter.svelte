@@ -3,12 +3,11 @@
   import type { SteamGame } from '../../types';
 
   type Props = { games: SteamGame[]; width?: number; height?: number };
-  type PriceFilter = 'all' | 'free' | 'under20' | '20to4099' | '41to4999' | 'over50';
-  type HoveredPoint = { game: SteamGame; chart: 'reviews' | 'peak' | 'playtime' };
+  type SelectedPoint = { game: SteamGame; chart: 'reviews' | 'peak' | 'playtime' | 'sales' };
 
   let { games, width = 1240, height = 420 }: Props = $props();
-  let priceFilter = $state<PriceFilter>('all');
-  let hoveredPoint = $state<HoveredPoint | null>(null);
+  let selectedPrices = $state<[number, number] | null>([0, 40]);
+  let selectedPoint = $state<SelectedPoint | null>(null);
 
   const gap = 44;
   const margin = { top: 36, right: 24, bottom: 58, left: 76 };
@@ -18,28 +17,36 @@
 
   const isIndie = (game: SteamGame) => game.genres.some((genre) => genre.toLowerCase() === 'indie');
   const reviewCount = (game: SteamGame) => game.positive_reviews + game.negative_reviews;
-  const priceRange = (game: SteamGame): Exclude<PriceFilter, 'all'> => {
-    if (game.is_free || game.price_no_sales === 0) return 'free';
-    if (game.price_no_sales < 20) return 'under20';
-    if (game.price_no_sales <= 40.99) return '20to4099';
-    if (game.price_no_sales < 50) return '41to4999';
-    return 'over50';
-  };
-
   const visiblePoints = $derived(
     games
       .filter((game) => Number.isFinite(game.price_no_sales) && game.price_no_sales >= 0 &&
         Number.isFinite(reviewCount(game)) && reviewCount(game) > 0 &&
         Number.isFinite(game.avg_playtime_forever) && game.avg_playtime_forever > 0)
-      .slice(0, 1400)
       .map((game) => ({ game }))
   );
+  const estimatedOwners = (game: SteamGame): number | null => {
+    const bounds = game.estimated_owners.replaceAll(',', '').split(/\s*(?:\.\.|-)\s*/).map(Number);
+    if (bounds.length !== 2 || bounds.some((value) => !Number.isFinite(value) || value < 0) || bounds[1] < bounds[0]) return null;
+    return (bounds[0] + bounds[1]) / 2;
+  };
+  const salesPoints = $derived(visiblePoints
+    .map(({ game }) => ({ game, owners: estimatedOwners(game) }))
+    .filter((point): point is { game: SteamGame; owners: number } =>
+      point.owners !== null && point.owners > 0 && Number.isFinite(point.game.discount_pct) &&
+      point.game.discount_pct >= 0 && point.game.discount_pct <= 100));
+  const maxOwners = $derived(d3.max(salesPoints, (point) => point.owners) ?? 1);
+  const discountX = $derived(d3.scaleLinear().domain([0, 100]).range([0, plotWidth]));
+  const ownersY = $derived(d3.scaleLog().domain([1, Math.max(1, maxOwners)]).nice().range([plotHeight, 0]));
+  const discountTicks = $derived(discountX.ticks(5));
+  const ownersTicks = $derived(ownersY.ticks(5));
   const maxPrice = $derived(d3.max(visiblePoints, ({ game }) => game.price_no_sales) ?? 1);
   const maxReviews = $derived(d3.max(visiblePoints, ({ game }) => reviewCount(game)) ?? 1);
   const peakPoints = $derived(visiblePoints.filter(({ game }) => Number.isFinite(game.peak_ccu) && game.peak_ccu > 0));
   const maxPeak = $derived(d3.max(peakPoints, ({ game }) => game.peak_ccu) ?? 1);
   const maxPlaytime = $derived(d3.max(visiblePoints, ({ game }) => game.avg_playtime_forever) ?? 1);
-  const x = $derived(d3.scaleLinear().domain([0, Math.max(1, maxPrice)]).nice().range([0, plotWidth]));
+  // Keep the overview domain independent of the zoomed scatterplot axes.
+  const brushMax = $derived(d3.scaleLinear().domain([0, Math.max(1, maxPrice)]).nice().domain()[1]);
+  const x = $derived(d3.scaleLinear().domain(selectedPrices ?? [0, brushMax]).range([0, plotWidth]));
   const reviewsY = $derived(d3.scaleLog().domain([1, Math.max(1, maxReviews)]).nice().range([plotHeight, 0]));
   const peakY = $derived(d3.scaleLog().domain([1, Math.max(1, maxPeak)]).nice().range([plotHeight, 0]));
   const playtimeY = $derived(d3.scaleLog().domain([1, Math.max(1, maxPlaytime)]).nice().range([plotHeight, 0]));
@@ -48,20 +55,86 @@
   const peakTicks = $derived(peakY.ticks(5));
   const playtimeTicks = $derived(playtimeY.ticks(5));
 
-  const isHighlighted = (game: SteamGame) => priceFilter === 'all' || priceRange(game) === priceFilter;
+  const isInRange = (game: SteamGame) => selectedPrices === null ||
+    (game.price_no_sales >= selectedPrices[0] - 1e-8 && game.price_no_sales <= selectedPrices[1] + 1e-8);
+  const brushWidth = $derived(Math.max(240, width - 48));
+  const brushScale = $derived(d3.scaleLinear().domain([0, brushMax]).range([0, brushWidth]));
+  const rangePoints = $derived(visiblePoints.filter(({ game }) => isInRange(game)));
+  const rangePeakPoints = $derived(peakPoints.filter(({ game }) => isInRange(game)));
+  let brushNode: SVGGElement | undefined;
+  let brushBehavior: d3.BrushBehavior<unknown> | undefined;
+
+  // The action runs in the browser; resizing or new data rebuilds the brush extent.
+  function priceBrush(node: SVGGElement, settings: { width: number; max: number }) {
+    brushNode = node;
+    const setup = ({ width: barWidth, max }: typeof settings) => {
+      const scale = d3.scaleLinear().domain([0, max]).range([0, barWidth]);
+      const behavior = d3.brushX<unknown>()
+        .extent([[0, 0], [barWidth, 32]])
+        .on('brush end', (event: d3.D3BrushEvent<unknown>) => {
+          const selection = event.selection as [number, number] | null;
+          selectedPrices = selection ? [scale.invert(selection[0]), scale.invert(selection[1])] : null;
+          selectedPoint = null;
+        });
+      brushBehavior = behavior;
+      const range = selectedPrices
+        ? [Math.min(selectedPrices[0], max), Math.min(selectedPrices[1], max)]
+        : [0, max];
+      d3.select(node).call(behavior).call(behavior.move, range.map(scale) as [number, number]);
+    };
+    setup(settings);
+    return {
+      update: setup,
+      destroy() {
+        d3.select(node).on('.brush', null);
+        brushNode = undefined;
+        brushBehavior = undefined;
+      }
+    };
+  }
+
+  function movePriceRange(low: number, high: number) {
+    const range: [number, number] = [Math.max(0, Math.min(low, brushMax)), Math.max(0, Math.min(high, brushMax))];
+    range.sort((a, b) => a - b);
+    selectedPrices = range;
+    selectedPoint = null;
+    if (brushNode && brushBehavior) {
+      d3.select(brushNode).call(brushBehavior.move, range.map(brushScale) as [number, number]);
+    }
+  }
   const formatPlaytime = (minutes: number) => minutes >= 60 ? `${(minutes / 60).toFixed(1)}h` : `${minutes.toFixed(0)}m`;
   const formatReviews = d3.format('.2s');
   const color = (game: SteamGame) => isIndie(game) ? '#ea580c' : '#0284c7';
   const priceLabel = (game: SteamGame) => game.is_free || game.price_no_sales === 0 ? 'Free' : `$${game.price_no_sales.toFixed(2)}`;
   const tooltipWidth = 190;
-  const tooltipX = $derived(hoveredPoint ? Math.min(Math.max(x(hoveredPoint.game.price_no_sales) + 10, 0), Math.max(0, plotWidth - tooltipWidth)) : 0);
-  const tooltipY = $derived(hoveredPoint
-    ? Math.max(0, (hoveredPoint.chart === 'reviews' ? reviewsY(reviewCount(hoveredPoint.game)) : hoveredPoint.chart === 'peak' ? peakY(hoveredPoint.game.peak_ccu) : playtimeY(hoveredPoint.game.avg_playtime_forever)) - 52)
-    : 0);
-
-  const selectPoint = (game: SteamGame, chart: HoveredPoint['chart']) => {
-    hoveredPoint = isHighlighted(game) ? { game, chart } : null;
+  const tooltipX = $derived(selectedPoint ? Math.min(Math.max(x(selectedPoint.game.price_no_sales) + 10, 0), Math.max(0, plotWidth - tooltipWidth)) : 0);
+  const tooltipY = (chart: SelectedPoint['chart']) => {
+    if (!selectedPoint) return 0;
+    const game = selectedPoint.game;
+    const position = chart === 'sales' ? ownersY(estimatedOwners(game) ?? 1)
+      : chart === 'reviews' ? reviewsY(reviewCount(game))
+      : chart === 'playtime' ? playtimeY(game.avg_playtime_forever)
+      : game.peak_ccu > 0 ? peakY(game.peak_ccu) : 0;
+    return Math.max(0, Math.min(plotHeight - 60, position - 52));
   };
+
+  const isSelected = (game: SteamGame) => selectedPoint?.game.app_id === game.app_id;
+  const selectPoint = (game: SteamGame, chart: SelectedPoint['chart']) => {
+    selectedPoint = isSelected(game) && selectedPoint?.chart === chart ? null : { game, chart };
+  };
+  const pointKeydown = (event: KeyboardEvent, game: SteamGame, chart: SelectedPoint['chart']) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      selectPoint(game, chart);
+    } else if (event.key === 'Escape') selectedPoint = null;
+  };
+  // Draw the selected game last so nearby points cannot cover it.
+  const orderedPoints = $derived([...rangePoints].sort((a, b) => Number(isSelected(a.game)) - Number(isSelected(b.game))));
+  const orderedPeakPoints = $derived([...rangePeakPoints].sort((a, b) => Number(isSelected(a.game)) - Number(isSelected(b.game))));
+  const orderedSalesPoints = $derived(salesPoints.filter(({ game }) => isInRange(game))
+    .sort((a, b) => Number(isSelected(a.game)) - Number(isSelected(b.game))));
+  const salesTooltipX = $derived(selectedPoint
+    ? Math.min(Math.max(discountX(selectedPoint.game.discount_pct) + 10, 0), Math.max(0, plotWidth - tooltipWidth)) : 0);
 </script>
 
 <section class="price-comparisons">
@@ -72,27 +145,28 @@
     </div>
   </div>
 
-  <fieldset class="price-filter">
-    <legend>Highlight price range</legend>
-    <label><input type="radio" name="plp-price-filter" value="all" bind:group={priceFilter} />All</label>
-    <label><input type="radio" name="plp-price-filter" value="free" bind:group={priceFilter} />Free</label>
-    <label><input type="radio" name="plp-price-filter" value="under20" bind:group={priceFilter} />Below $20</label>
-    <label><input type="radio" name="plp-price-filter" value="20to4099" bind:group={priceFilter} />$20–$40.99</label>
-    <label><input type="radio" name="plp-price-filter" value="41to4999" bind:group={priceFilter} />$41–$49.99</label>
-    <label><input type="radio" name="plp-price-filter" value="over50" bind:group={priceFilter} />$50+</label>
-  </fieldset>
-
   <div class="legend" aria-label="Point color legend">
     <span><i class="swatch indie"></i>Indie</span>
     <span><i class="swatch non-indie"></i>Non-indie</span>
-    <span class="point-count">{visiblePoints.length.toLocaleString()} games</span>
+    <span class="point-count">{rangePoints.length.toLocaleString()} of {visiblePoints.length.toLocaleString()} games</span>
   </div>
+
+  <p class="selection-help">Click a point to compare that game across all plots. Click it again or clear the selection to deselect.</p>
+  {#if selectedPoint}
+    <div class="selection-info" role="status">
+      <strong>{selectedPoint.game.name}</strong>
+      <span>{priceLabel(selectedPoint.game)} &middot; {reviewCount(selectedPoint.game).toLocaleString()} reviews &middot; {formatPlaytime(selectedPoint.game.avg_playtime_forever)} average playtime &middot; {selectedPoint.game.peak_ccu > 0 ? `${selectedPoint.game.peak_ccu.toLocaleString()} peak players` : 'Peak players unavailable'}</span>
+      <button onclick={() => selectedPoint = null}>Clear selection</button>
+    </div>
+  {/if}
 
   {#if visiblePoints.length === 0}
     <p>No games with valid price, review-count, and playtime data are available.</p>
   {:else}
+    {#if rangePoints.length === 0}
+      <p role="status">No games in the selected price range.</p>
+    {/if}
     <div class="charts">
-      <div class="left-charts">
       <svg width={panelWidth} {height} role="img" aria-label="Scatterplot of price and review count, colored by indie status">
         <g transform={`translate(${margin.left} ${margin.top})`}>
           <text class="chart-title" x={plotWidth / 2} y={-14} text-anchor="middle">Price vs. Review Count</text>
@@ -102,39 +176,82 @@
           {/each}
           {#each xTicks as tick}
             <line class="grid-line" y1="0" y2={plotHeight} x1={x(tick)} x2={x(tick)} />
-            <text class="tick-label" x={x(tick)} y={plotHeight + 18} text-anchor="middle">${tick.toFixed(0)}</text>
+            <text class="tick-label" x={x(tick)} y={plotHeight + 18} text-anchor="middle">${d3.format("~g")(tick)}</text>
           {/each}
-          {#each visiblePoints as point}
+          {#each orderedPoints as point}
             <circle
               cx={x(point.game.price_no_sales)}
               cy={reviewsY(reviewCount(point.game))}
-              r={isHighlighted(point.game) ? 4 : 2.5}
+              r={isSelected(point.game) ? 7 : 4}
               fill={color(point.game)}
-              opacity={isHighlighted(point.game) ? 0.75 : 0.12}
-              stroke={isHighlighted(point.game) ? 'white' : 'none'}
-              stroke-width="0.7"
-              role="img"
-              pointer-events={isHighlighted(point.game) ? 'auto' : 'none'}
-              onmouseenter={() => selectPoint(point.game, 'reviews')}
-              onmouseleave={() => hoveredPoint = null}
+              opacity={selectedPoint ? isSelected(point.game) ? 1 : 0.12 : 0.75}
+              stroke={isSelected(point.game) ? '#172033' : 'white'}
+              stroke-width={isSelected(point.game) ? 2 : 0.7}
+              role="button"
+              tabindex="0"
+              aria-label={`Select ${point.game.name}, ${priceLabel(point.game)}`}
+              aria-pressed={isSelected(point.game)}
+              onclick={() => selectPoint(point.game, 'reviews')}
+              onkeydown={(event) => pointKeydown(event, point.game, 'reviews')}
             >
-              {#if isHighlighted(point.game)}
-                <title>{point.game.name}: {priceLabel(point.game)}, {formatReviews(reviewCount(point.game))} reviews; {isIndie(point.game) ? 'Indie' : 'Non-indie'}</title>
-              {/if}
             </circle>
           {/each}
-          {#if hoveredPoint?.chart === 'reviews' && isHighlighted(hoveredPoint.game)}
-            <g class="tooltip" transform={`translate(${tooltipX} ${tooltipY})`}>
+          {#if selectedPoint && isInRange(selectedPoint.game)}
+            <g class="tooltip" transform={`translate(${tooltipX} ${tooltipY('reviews')})`}>
               <rect width={tooltipWidth} height="60" rx="4" />
-              <text x="9" y="18">{hoveredPoint.game.name}</text>
-              <text x="9" y="36">Price: {priceLabel(hoveredPoint.game)}</text>
-              <text x="9" y="54">Reviews: {formatReviews(reviewCount(hoveredPoint.game))}</text>
+              <text x="9" y="18">{selectedPoint.game.name}</text>
+              <text x="9" y="36">Price: {priceLabel(selectedPoint.game)}</text>
+              <text x="9" y="54">Reviews: {reviewCount(selectedPoint.game).toLocaleString()}</text>
             </g>
           {/if}
           <line class="axis" x1="0" x2={plotWidth} y1={plotHeight} y2={plotHeight} />
           <line class="axis" x1="0" x2="0" y1="0" y2={plotHeight} />
           <text class="axis-label" x={plotWidth / 2} y={plotHeight + 44} text-anchor="middle">Price (USD)</text>
           <text class="axis-label" transform={`translate(${-58} ${plotHeight / 2}) rotate(-90)`} text-anchor="middle">Review count (log scale)</text>
+        </g>
+      </svg>
+
+      <svg width={panelWidth} {height} role="img" aria-label="Scatterplot of price and playtime, colored by indie status">
+        <g transform={`translate(${margin.left} ${margin.top})`}>
+          <text class="chart-title" x={plotWidth / 2} y={-14} text-anchor="middle">Price vs. Playtime</text>
+          {#each playtimeTicks as tick}
+            <line class="grid-line" x1="0" x2={plotWidth} y1={playtimeY(tick)} y2={playtimeY(tick)} />
+            <text class="tick-label" x={-10} y={playtimeY(tick)} text-anchor="end" dominant-baseline="middle">{formatPlaytime(tick)}</text>
+          {/each}
+          {#each xTicks as tick}
+            <line class="grid-line" y1="0" y2={plotHeight} x1={x(tick)} x2={x(tick)} />
+            <text class="tick-label" x={x(tick)} y={plotHeight + 18} text-anchor="middle">${d3.format("~g")(tick)}</text>
+          {/each}
+          {#each orderedPoints as point}
+            <circle
+              cx={x(point.game.price_no_sales)}
+              cy={playtimeY(point.game.avg_playtime_forever)}
+              r={isSelected(point.game) ? 7 : 4}
+              fill={color(point.game)}
+              opacity={selectedPoint ? isSelected(point.game) ? 1 : 0.12 : 0.75}
+              stroke={isSelected(point.game) ? '#172033' : 'white'}
+              stroke-width={isSelected(point.game) ? 2 : 0.7}
+              role="button"
+              tabindex="0"
+              aria-label={`Select ${point.game.name}, ${priceLabel(point.game)}`}
+              aria-pressed={isSelected(point.game)}
+              onclick={() => selectPoint(point.game, 'playtime')}
+              onkeydown={(event) => pointKeydown(event, point.game, 'playtime')}
+            >
+            </circle>
+          {/each}
+          {#if selectedPoint && isInRange(selectedPoint.game)}
+            <g class="tooltip" transform={`translate(${tooltipX} ${tooltipY('playtime')})`}>
+              <rect width={tooltipWidth} height="60" rx="4" />
+              <text x="9" y="18">{selectedPoint.game.name}</text>
+              <text x="9" y="36">Price: {priceLabel(selectedPoint.game)}</text>
+              <text x="9" y="54">Playtime: {formatPlaytime(selectedPoint.game.avg_playtime_forever)}</text>
+            </g>
+          {/if}
+          <line class="axis" x1="0" x2={plotWidth} y1={plotHeight} y2={plotHeight} />
+          <line class="axis" x1="0" x2="0" y1="0" y2={plotHeight} />
+          <text class="axis-label" x={plotWidth / 2} y={plotHeight + 44} text-anchor="middle">Price (USD)</text>
+          <text class="axis-label" transform={`translate(${-58} ${plotHeight / 2}) rotate(-90)`} text-anchor="middle">Average playtime (minutes, log scale)</text>
         </g>
       </svg>
 
@@ -147,33 +264,32 @@
           {/each}
           {#each xTicks as tick}
             <line class="grid-line" y1="0" y2={plotHeight} x1={x(tick)} x2={x(tick)} />
-            <text class="tick-label" x={x(tick)} y={plotHeight + 18} text-anchor="middle">${tick.toFixed(0)}</text>
+            <text class="tick-label" x={x(tick)} y={plotHeight + 18} text-anchor="middle">${d3.format("~g")(tick)}</text>
           {/each}
-          {#each peakPoints as point}
+          {#each orderedPeakPoints as point}
             <circle
               cx={x(point.game.price_no_sales)}
               cy={peakY(point.game.peak_ccu)}
-              r={isHighlighted(point.game) ? 4 : 2.5}
+              r={isSelected(point.game) ? 7 : 4}
               fill={color(point.game)}
-              opacity={isHighlighted(point.game) ? 0.75 : 0.12}
-              stroke={isHighlighted(point.game) ? 'white' : 'none'}
-              stroke-width="0.7"
-              role="img"
-              pointer-events={isHighlighted(point.game) ? 'auto' : 'none'}
-              onmouseenter={() => selectPoint(point.game, 'peak')}
-              onmouseleave={() => hoveredPoint = null}
+              opacity={selectedPoint ? isSelected(point.game) ? 1 : 0.12 : 0.75}
+              stroke={isSelected(point.game) ? '#172033' : 'white'}
+              stroke-width={isSelected(point.game) ? 2 : 0.7}
+              role="button"
+              tabindex="0"
+              aria-label={`Select ${point.game.name}, ${priceLabel(point.game)}`}
+              aria-pressed={isSelected(point.game)}
+              onclick={() => selectPoint(point.game, 'peak')}
+              onkeydown={(event) => pointKeydown(event, point.game, 'peak')}
             >
-              {#if isHighlighted(point.game)}
-                <title>{point.game.name}: {priceLabel(point.game)}, {formatReviews(point.game.peak_ccu)} peak concurrent players; {isIndie(point.game) ? 'Indie' : 'Non-indie'}</title>
-              {/if}
             </circle>
           {/each}
-          {#if hoveredPoint?.chart === 'peak' && isHighlighted(hoveredPoint.game)}
-            <g class="tooltip" transform={`translate(${tooltipX} ${tooltipY})`}>
+          {#if selectedPoint && isInRange(selectedPoint.game)}
+            <g class="tooltip" transform={`translate(${tooltipX} ${tooltipY('peak')})`}>
               <rect width={tooltipWidth} height="60" rx="4" />
-              <text x="9" y="18">{hoveredPoint.game.name}</text>
-              <text x="9" y="36">Price: {priceLabel(hoveredPoint.game)}</text>
-              <text x="9" y="54">Peak CCU: {formatReviews(hoveredPoint.game.peak_ccu)}</text>
+              <text x="9" y="18">{selectedPoint.game.name}</text>
+              <text x="9" y="36">Price: {priceLabel(selectedPoint.game)}</text>
+              <text x="9" y="54">Peak CCU: {selectedPoint.game.peak_ccu > 0 ? selectedPoint.game.peak_ccu.toLocaleString() : 'Unavailable'}</text>
             </g>
           {/if}
           <line class="axis" x1="0" x2={plotWidth} y1={plotHeight} y2={plotHeight} />
@@ -182,70 +298,109 @@
           <text class="axis-label" transform={`translate(${-58} ${plotHeight / 2}) rotate(-90)`} text-anchor="middle">Peak concurrent players (log scale)</text>
         </g>
       </svg>
-      </div>
-      <svg width={panelWidth} {height} role="img" aria-label="Scatterplot of price and playtime, colored by indie status">
+
+      <svg width={panelWidth} {height} role="img" aria-label="Scatterplot of discount percentage and estimated owners as a sales proxy, colored by indie status">
         <g transform={`translate(${margin.left} ${margin.top})`}>
-          <text class="chart-title" x={plotWidth / 2} y={-14} text-anchor="middle">Price vs. Playtime</text>
-          {#each playtimeTicks as tick}
-            <line class="grid-line" x1="0" x2={plotWidth} y1={playtimeY(tick)} y2={playtimeY(tick)} />
-            <text class="tick-label" x={-10} y={playtimeY(tick)} text-anchor="end" dominant-baseline="middle">{formatPlaytime(tick)}</text>
+          <text class="chart-title" x={plotWidth / 2} y={-14} text-anchor="middle">Discount vs. Estimated Sales</text>
+          {#each ownersTicks as tick}
+            <line class="grid-line" x1="0" x2={plotWidth} y1={ownersY(tick)} y2={ownersY(tick)} />
+            <text class="tick-label" x={-10} y={ownersY(tick)} text-anchor="end" dominant-baseline="middle">{formatReviews(tick)}</text>
           {/each}
-          {#each xTicks as tick}
-            <line class="grid-line" y1="0" y2={plotHeight} x1={x(tick)} x2={x(tick)} />
-            <text class="tick-label" x={x(tick)} y={plotHeight + 18} text-anchor="middle">${tick.toFixed(0)}</text>
+          {#each discountTicks as tick}
+            <line class="grid-line" y1="0" y2={plotHeight} x1={discountX(tick)} x2={discountX(tick)} />
+            <text class="tick-label" x={discountX(tick)} y={plotHeight + 18} text-anchor="middle">{tick}%</text>
           {/each}
-          {#each visiblePoints as point}
+          {#each orderedSalesPoints as point}
             <circle
-              cx={x(point.game.price_no_sales)}
-              cy={playtimeY(point.game.avg_playtime_forever)}
-              r={isHighlighted(point.game) ? 4 : 2.5}
+              cx={discountX(point.game.discount_pct)}
+              cy={ownersY(point.owners)}
+              r={isSelected(point.game) ? 7 : 4}
               fill={color(point.game)}
-              opacity={isHighlighted(point.game) ? 0.75 : 0.12}
-              stroke={isHighlighted(point.game) ? 'white' : 'none'}
-              stroke-width="0.7"
-              role="img"
-              pointer-events={isHighlighted(point.game) ? 'auto' : 'none'}
-              onmouseenter={() => selectPoint(point.game, 'playtime')}
-              onmouseleave={() => hoveredPoint = null}
+              opacity={selectedPoint ? isSelected(point.game) ? 1 : 0.12 : 0.75}
+              stroke={isSelected(point.game) ? '#172033' : 'white'}
+              stroke-width={isSelected(point.game) ? 2 : 0.7}
+              role="button"
+              tabindex="0"
+              aria-label={`Select ${point.game.name}, ${priceLabel(point.game)}`}
+              aria-pressed={isSelected(point.game)}
+              onclick={() => selectPoint(point.game, 'sales')}
+              onkeydown={(event) => pointKeydown(event, point.game, 'sales')}
             >
-              {#if isHighlighted(point.game)}
-                <title>{point.game.name}: {priceLabel(point.game)}, {formatPlaytime(point.game.avg_playtime_forever)}; {isIndie(point.game) ? 'Indie' : 'Non-indie'}</title>
-              {/if}
             </circle>
           {/each}
-          {#if hoveredPoint?.chart === 'playtime' && isHighlighted(hoveredPoint.game)}
-            <g class="tooltip" transform={`translate(${tooltipX} ${tooltipY})`}>
+          {#if selectedPoint && orderedSalesPoints.some((point) => point.game.app_id === selectedPoint?.game.app_id)}
+            <g class="tooltip" transform={`translate(${salesTooltipX} ${tooltipY('sales')})`}>
               <rect width={tooltipWidth} height="60" rx="4" />
-              <text x="9" y="18">{hoveredPoint.game.name}</text>
-              <text x="9" y="36">Price: {priceLabel(hoveredPoint.game)}</text>
-              <text x="9" y="54">Playtime: {formatPlaytime(hoveredPoint.game.avg_playtime_forever)}</text>
+              <text x="9" y="18">{selectedPoint.game.name}</text>
+              <text x="9" y="36">Discount: {selectedPoint.game.discount_pct}%</text>
+              <text x="9" y="54">Est. owners: {estimatedOwners(selectedPoint.game)?.toLocaleString()}</text>
             </g>
           {/if}
           <line class="axis" x1="0" x2={plotWidth} y1={plotHeight} y2={plotHeight} />
           <line class="axis" x1="0" x2="0" y1="0" y2={plotHeight} />
-          <text class="axis-label" x={plotWidth / 2} y={plotHeight + 44} text-anchor="middle">Price (USD)</text>
-          <text class="axis-label" transform={`translate(${-58} ${plotHeight / 2}) rotate(-90)`} text-anchor="middle">Average playtime (minutes, log scale)</text>
+          <text class="axis-label" x={plotWidth / 2} y={plotHeight + 44} text-anchor="middle">Discount (%)</text>
+          <text class="axis-label" transform={`translate(${-58} ${plotHeight / 2}) rotate(-90)`} text-anchor="middle">Estimated owners (log scale)</text>
         </g>
       </svg>
+    </div>
+    <p class="selection-help">Estimated sales use the midpoint of each owner range, including free-game ownership.</p>
+    <div class="price-brush">
+      <div class="brush-heading">
+        <strong>Brush price range</strong>
+        <span aria-live="polite">${(selectedPrices?.[0] ?? 0).toFixed(2)} &ndash; ${(selectedPrices?.[1] ?? brushMax).toFixed(2)} &middot; {rangePoints.length.toLocaleString()} visible games</span>
+        <button onclick={() => movePriceRange(0, brushMax)}>Reset range</button>
+      </div>
+      <p>Drag across the bar to zoom the price axes and filter games in all four plots. Drag the selection to move it, or its edges to resize.</p>
+      <svg class="brush-svg" width="100%" viewBox={`0 0 ${brushWidth + 48} 76`} role="group" aria-label="Select a continuous price range for all scatterplots">
+        <g transform="translate(24 8)">
+          <rect class="brush-track" width={brushWidth} height="32" rx="3" />
+          <g class="brush" use:priceBrush={{ width: brushWidth, max: brushMax }}></g>
+          {#each brushScale.ticks(8) as tick}
+            <line class="axis" x1={brushScale(tick)} x2={brushScale(tick)} y1="36" y2="41" />
+            <text class="tick-label" x={brushScale(tick)} y="56" text-anchor="middle">${d3.format("~g")(tick)}</text>
+          {/each}
+        </g>
+      </svg>
+      <div class="range-inputs">
+        <label>Minimum price ($)
+          <input type="number" min="0" max={brushMax} step="0.01" value={(selectedPrices?.[0] ?? 0).toFixed(2)}
+            onchange={(event) => { const value = event.currentTarget.valueAsNumber; if (Number.isFinite(value)) movePriceRange(Math.min(value, selectedPrices?.[1] ?? brushMax), selectedPrices?.[1] ?? brushMax); }} />
+        </label>
+        <label>Maximum price ($)
+          <input type="number" min="0" max={brushMax} step="0.01" value={(selectedPrices?.[1] ?? brushMax).toFixed(2)}
+            onchange={(event) => { const value = event.currentTarget.valueAsNumber; if (Number.isFinite(value)) movePriceRange(selectedPrices?.[0] ?? 0, Math.max(value, selectedPrices?.[0] ?? 0)); }} />
+        </label>
+      </div>
     </div>
   {/if}
 </section>
 
 <style>
+  circle[role="button"] { cursor: pointer; }
+  circle[role="button"]:focus-visible { outline: 2px solid #172033; }
+  .selection-help { font-size: 0.8rem; color: #475569; }
+  .selection-info { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px; margin: 12px 0; border: 1px solid #94a3b8; border-radius: 6px; font-size: 0.85rem; }
+  .selection-info button { margin-left: auto; cursor: pointer; padding: 5px 10px; }
   .price-comparisons { min-width: 0; }
   .header { display: block; }
   h2 { margin: 0 0 0.25rem; }
-  .price-filter { display: flex; flex-wrap: wrap; gap: 0.45rem 0.75rem; margin: 0; padding: 0; border: 0; }
-  .price-filter legend { width: 100%; margin-bottom: 0.15rem; color: #475569; font-size: 0.8rem; font-weight: 600; }
-  .price-filter label, .legend span { display: inline-flex; align-items: center; gap: 0.3rem; color: #243247; font-size: 0.78rem; white-space: nowrap; }
-  .price-filter input { accent-color: #2563eb; }
+  .legend span { display: inline-flex; align-items: center; gap: 0.3rem; color: #243247; font-size: 0.78rem; white-space: nowrap; }
+  .price-brush { margin-top: 24px; padding: 16px; border: 1px solid #cbd5e1; border-radius: 6px; }
+  .brush-heading, .range-inputs { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+  .brush-heading span, .price-brush p { font-size: 0.8rem; color: #475569; }
+  .brush-heading button { margin-left: auto; padding: 5px 10px; border: 1px solid #94a3b8; border-radius: 4px; background: white; cursor: pointer; }
+  .brush-track { fill: #e2e8f0; }
+  .brush-svg { touch-action: none; }
+  .brush :global(.selection) { fill: #0284c7; fill-opacity: 0.25; stroke: #0369a1; }
+  .brush :global(.handle) { fill: #0369a1; }
+  .range-inputs label { display: flex; align-items: center; gap: 8px; font-size: 0.8rem; }
+  .range-inputs input { width: 100px; padding: 5px; border: 1px solid #94a3b8; border-radius: 4px; }
   .legend { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; margin: 0.75rem 0 0.25rem; }
   .swatch { width: 0.7rem; height: 0.7rem; border-radius: 50%; }
   .swatch.indie { background: #ea580c; }
   .swatch.non-indie { background: #0284c7; }
   .point-count { margin-left: auto; color: #64748b !important; }
   .charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 44px; align-items: start; }
-  .left-charts { display: grid; gap: 44px; min-width: 0; }
   svg { display: block; max-width: 100%; overflow: visible; font-family: inherit; }
   .chart-title { fill: #243247; font-size: 12px; font-weight: 700; }
   .grid-line { stroke: #e2e8f0; stroke-width: 1; }
