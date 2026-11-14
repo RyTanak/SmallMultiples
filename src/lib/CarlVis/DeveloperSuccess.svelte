@@ -9,7 +9,7 @@
 
   let { games, width = 1040 }: Props = $props();
   // Change this constant to adjust what counts as a successful game.
-  const SUCCESS_REVIEW_THRESHOLD = 20_000;
+  const SUCCESS_REVIEW_THRESHOLD = 75_000;
   const barHeight = 350;
   const pieSize = 300;
   const margin = { top: 48, right: 28, bottom: 66, left: 72 };

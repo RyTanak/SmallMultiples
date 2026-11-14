@@ -9,13 +9,21 @@
   const datedGames = $derived(games.filter((game): game is DatedGame => game.release_date !== null));
   const years = $derived([...new Set(datedGames.map((game) => game.release_date.getFullYear()))].sort((a, b) => a - b));
   const series = $derived.by(() => {
-    const genres = [...new Set(datedGames.flatMap((game) => game.genres))];
-    return genres
+    const counts = new Map<string, Map<number, number>>();
+    for (const game of datedGames) {
+      const year = game.release_date.getFullYear();
+      for (const genre of new Set(game.genres)) {
+        const byYear = counts.get(genre) ?? new Map<number, number>();
+        counts.set(genre, byYear);
+        byYear.set(year, (byYear.get(year) ?? 0) + 1);
+      }
+    }
+    return [...counts.keys()]
       .map((genre) => ({
         genre,
         points: years.map((year) => ({
           year,
-          count: datedGames.filter((game) => game.release_date.getFullYear() === year && game.genres.includes(genre)).length
+          count: counts.get(genre)?.get(year) ?? 0
         }))
       }))
       .sort((a, b) => d3.sum(b.points, (point) => point.count) - d3.sum(a.points, (point) => point.count))

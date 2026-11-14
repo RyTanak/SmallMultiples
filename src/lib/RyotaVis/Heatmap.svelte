@@ -3,7 +3,22 @@
   type Props = { games: SteamGame[]; width?: number; height?: number };
   let { games, width = 620, height = 420 }: Props = $props();
   const genres = $derived([...new Set(games.flatMap((game) => game.genres))].sort());
-  const cells = $derived(genres.flatMap((row) => genres.map((column) => ({ row, column, count: row === column ? 0 : games.filter((game) => game.genres.includes(row) && game.genres.includes(column)).length }))));
+  const cells = $derived.by(() => {
+    const counts = new Map<string, Map<string, number>>();
+    for (const game of games) {
+      const uniqueGenres = [...new Set(game.genres)];
+      for (const row of uniqueGenres) {
+        const columns = counts.get(row) ?? new Map<string, number>();
+        counts.set(row, columns);
+        for (const column of uniqueGenres) {
+          if (row !== column) columns.set(column, (columns.get(column) ?? 0) + 1);
+        }
+      }
+    }
+    return genres.flatMap((row) => genres.map((column) => ({
+      row, column, count: counts.get(row)?.get(column) ?? 0
+    })));
+  });
   const left = 110; const top = 70; const size = $derived(Math.min((width - left - 20) / Math.max(genres.length, 1), (height - top - 20) / Math.max(genres.length, 1)));
   const max = $derived(Math.max(1, ...cells.map((cell) => cell.count)));
 </script>
