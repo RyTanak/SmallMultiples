@@ -1,7 +1,10 @@
 ﻿export { default as Bar } from './RyotaVis/Bar.svelte';
 export { default as Bump } from './RyotaVis/Bump.svelte';
 export { default as Heatmap } from './RyotaVis/Heatmap.svelte';
-export { default as Scatter } from './EricVis/Scatter.svelte';
-export { default as A2_4 } from './EricVis/A2_4.svelte';
-export { default as Line } from './EricVis/Line.svelte';
+export { default as GPHeatmap } from './RyotaVis/GPHeatmap.svelte';
+export { default as PLPScatter } from './RyotaVis/PLPScatter.svelte';
+export { default as Glyphs } from './EricVis/Glyphs.svelte';
+export { default as ParallelCoords } from './CarlVis/ParallelCoords.svelte';
+export { default as SplitGenreReviews } from './CarlVis/SplitGenreReviews.svelte';
+export { default as PriceTrend } from './CarlVis/PriceTrend.svelte';
 export { default as Ridgeline } from './CarlVis/Ridgeline.svelte';
