@@ -36,7 +36,7 @@
   const genreDomain = $derived(
     [...new Set(subset.map(primaryGenre))].sort((a, b) => a.localeCompare(b))
   );
-  const maxPrice = $derived(Math.max(1, d3.max(subset, (game) => game.price_usd) ?? 1));
+  const maxPrice = $derived(Math.max(1, d3.max(subset, (game) => game.price_no_sales) ?? 1));
   const maxPlaytime = $derived(Math.max(1, d3.max(subset, (game) => hours(game.median_playtime)) ?? 1));
   const maxReviews = $derived(Math.max(1, d3.max(subset, totalReviews) ?? MIN_TOTAL_REVIEWS));
   const priceScale = $derived(
@@ -65,7 +65,7 @@
   const yValue = (game: SteamGame, dimension: Dimension) => {
     switch (dimension) {
       case 'price':
-        return margin.top + priceScale(game.price_usd);
+        return margin.top + priceScale(game.price_no_sales);
       case 'medianPlaytime':
         return margin.top + playtimeScale(hours(game.median_playtime));
       case 'genre':
@@ -169,7 +169,7 @@
     {#if hoveredGame}
       <strong>{hoveredGame.name}</strong>
       <span>{primaryGenre(hoveredGame)} · {isIndie(hoveredGame) ? 'Indie' : 'Other'}</span>
-      <span>${hoveredGame.price_usd.toFixed(2)} · {hours(hoveredGame.median_playtime).toFixed(1)}h median playtime · {d3.format(',')(totalReviews(hoveredGame))} reviews · {d3.format('.1%')(sentiment(hoveredGame))} positive</span>
+      <span>${hoveredGame.price_no_sales.toFixed(2)} · {hours(hoveredGame.median_playtime).toFixed(1)}h median playtime · {d3.format(',')(totalReviews(hoveredGame))} reviews · {d3.format('.1%')(sentiment(hoveredGame))} positive</span>
     {:else}
       <span>Hover over a line to highlight the game it represents.</span>
     {/if}

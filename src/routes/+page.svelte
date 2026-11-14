@@ -10,6 +10,7 @@
   import ParallelCoords from "$lib/CarlVis/ParallelCoords.svelte";
   import SplitGenreReviews from "$lib/CarlVis/SplitGenreReviews.svelte";
   import PriceTrend from "$lib/CarlVis/PriceTrend.svelte";
+  import DeveloperSuccess from "$lib/CarlVis/DeveloperSuccess.svelte";
   import Glyphs from "$lib/EricVis/Glyphs.svelte";
   import type { SteamGame } from "../types";
 
@@ -86,4 +87,7 @@
   <GPHeatmap {games} />
   <PLPScatter {games} />
   <Glyphs {games} />
+  <DeveloperSuccess {games} />
 </main>
+
+

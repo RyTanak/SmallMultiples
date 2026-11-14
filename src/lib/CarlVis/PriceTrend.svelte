@@ -33,13 +33,13 @@
   );
 
   const buildPriceBands = (categoryGames: SteamGame[]) => {
-    const sortedGames = [...categoryGames].sort((a, b) => a.price_usd - b.price_usd);
+    const sortedGames = [...categoryGames].sort((a, b) => a.price_no_sales - b.price_no_sales);
     const bands: SteamGame[][] = [];
 
     sortedGames.forEach((game) => {
       const currentBand = bands[bands.length - 1];
-      const currentBandMax = currentBand ? currentBand[currentBand.length - 1].price_usd : null;
-      if (currentBand && currentBandMax !== null && game.price_usd - currentBandMax <= PRICE_MATCH_MARGIN + 1e-9) {
+      const currentBandMax = currentBand ? currentBand[currentBand.length - 1].price_no_sales : null;
+      if (currentBand && currentBandMax !== null && game.price_no_sales - currentBandMax <= PRICE_MATCH_MARGIN + 1e-9) {
         currentBand.push(game);
       } else {
         bands.push([game]);
@@ -50,8 +50,8 @@
         const priceCounts = new Map<number, number>();
         const priceReviews = new Map<number, number>();
         band.forEach((game) => {
-          priceCounts.set(game.price_usd, (priceCounts.get(game.price_usd) ?? 0) + 1);
-          priceReviews.set(game.price_usd, (priceReviews.get(game.price_usd) ?? 0) + totalReviews(game));
+          priceCounts.set(game.price_no_sales, (priceCounts.get(game.price_no_sales) ?? 0) + 1);
+          priceReviews.set(game.price_no_sales, (priceReviews.get(game.price_no_sales) ?? 0) + totalReviews(game));
         });
         const price = [...priceCounts.keys()].sort(
           (a, b) =>
@@ -68,28 +68,28 @@
       (a, b) =>
         b.length - a.length ||
         d3.sum(b, totalReviews) - d3.sum(a, totalReviews) ||
-        d3.min(a, (game) => game.price_usd)! - d3.min(b, (game) => game.price_usd)!
+        d3.min(a, (game) => game.price_no_sales)! - d3.min(b, (game) => game.price_no_sales)!
     );
     const selectedBands = orderedBands.slice(0, TOP_PRICE_BANDS).map(summarizeBand);
 
     if (selectedBands.length >= TOP_PRICE_BANDS) return selectedBands;
 
     const usedPrices = new Set(selectedBands.map((band) => band.price));
-    const fallbackPrices = [...new Set(categoryGames.map((game) => game.price_usd))]
+    const fallbackPrices = [...new Set(categoryGames.map((game) => game.price_no_sales))]
       .filter((price) => !usedPrices.has(price))
       .sort(
         (a, b) =>
-          categoryGames.filter((game) => game.price_usd === b).length -
-            categoryGames.filter((game) => game.price_usd === a).length ||
-          d3.sum(categoryGames.filter((game) => game.price_usd === b), totalReviews) -
-            d3.sum(categoryGames.filter((game) => game.price_usd === a), totalReviews) ||
+          categoryGames.filter((game) => game.price_no_sales === b).length -
+            categoryGames.filter((game) => game.price_no_sales === a).length ||
+          d3.sum(categoryGames.filter((game) => game.price_no_sales === b), totalReviews) -
+            d3.sum(categoryGames.filter((game) => game.price_no_sales === a), totalReviews) ||
           a - b
       )
       .slice(0, TOP_PRICE_BANDS - selectedBands.length);
 
     return [
       ...selectedBands,
-      ...fallbackPrices.map((price) => summarizeBand(categoryGames.filter((game) => game.price_usd === price)))
+      ...fallbackPrices.map((price) => summarizeBand(categoryGames.filter((game) => game.price_no_sales === price)))
     ];
   };
 
