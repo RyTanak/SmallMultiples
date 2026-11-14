@@ -3,11 +3,13 @@
   import type { SteamGame } from '../../types';
 
   type Props = { games: SteamGame[]; width?: number; height?: number };
-  type SelectedPoint = { game: SteamGame; chart: 'reviews' | 'peak' | 'playtime' | 'sales' };
+  type GameType = 'all' | 'indie' | 'non-indie';
+  type SelectedPoint = { game: SteamGame; chart: 'reviews' | 'sentiment' | 'playtime' | 'sales' };
 
   let { games, width = 1240, height = 420 }: Props = $props();
   let selectedPrices = $state<[number, number] | null>([0, 40]);
   let selectedPoint = $state<SelectedPoint | null>(null);
+  let gameType = $state<GameType>('all');
 
   const gap = 44;
   const margin = { top: 36, right: 24, bottom: 58, left: 76 };
@@ -16,6 +18,11 @@
   const plotHeight = $derived(Math.max(1, height - margin.top - margin.bottom));
 
   const isIndie = (game: SteamGame) => game.genres.some((genre) => genre.toLowerCase() === 'indie');
+  const matchesGameType = (game: SteamGame) => gameType === 'all' || isIndie(game) === (gameType === 'indie');
+  function changeGameType(value: GameType) {
+    gameType = value;
+    selectedPoint = null;
+  }
   const reviewCount = (game: SteamGame) => game.positive_reviews + game.negative_reviews;
   const visiblePoints = $derived(
     games
@@ -41,26 +48,26 @@
   const ownersTicks = $derived(ownersY.ticks(5));
   const maxPrice = $derived(d3.max(visiblePoints, ({ game }) => game.price_no_sales) ?? 1);
   const maxReviews = $derived(d3.max(visiblePoints, ({ game }) => reviewCount(game)) ?? 1);
-  const peakPoints = $derived(visiblePoints.filter(({ game }) => Number.isFinite(game.peak_ccu) && game.peak_ccu > 0));
-  const maxPeak = $derived(d3.max(peakPoints, ({ game }) => game.peak_ccu) ?? 1);
   const maxPlaytime = $derived(d3.max(visiblePoints, ({ game }) => game.avg_playtime_forever) ?? 1);
   // Keep the overview domain independent of the zoomed scatterplot axes.
   const brushMax = $derived(d3.scaleLinear().domain([0, Math.max(1, maxPrice)]).nice().domain()[1]);
   const x = $derived(d3.scaleLinear().domain(selectedPrices ?? [0, brushMax]).range([0, plotWidth]));
   const reviewsY = $derived(d3.scaleLog().domain([1, Math.max(1, maxReviews)]).nice().range([plotHeight, 0]));
-  const peakY = $derived(d3.scaleLog().domain([1, Math.max(1, maxPeak)]).nice().range([plotHeight, 0]));
+  const positiveReviewPercent = (game: SteamGame) => game.positive_reviews / reviewCount(game) * 100;
+  const reviewCountX = $derived(d3.scaleLog().domain([1, Math.max(1, maxReviews)]).nice().range([0, plotWidth]));
+  const sentimentY = $derived(d3.scaleLinear().domain([0, 100]).range([plotHeight, 0]));
+  const reviewCountTicks = $derived(reviewCountX.ticks(5));
   const playtimeY = $derived(d3.scaleLog().domain([1, Math.max(1, maxPlaytime)]).nice().range([plotHeight, 0]));
   const xTicks = $derived(x.ticks(5));
   const reviewTicks = $derived(reviewsY.ticks(5));
-  const peakTicks = $derived(peakY.ticks(5));
+  const sentimentTicks = $derived(sentimentY.ticks(5));
   const playtimeTicks = $derived(playtimeY.ticks(5));
 
   const isInRange = (game: SteamGame) => selectedPrices === null ||
     (game.price_no_sales >= selectedPrices[0] - 1e-8 && game.price_no_sales <= selectedPrices[1] + 1e-8);
   const brushWidth = $derived(Math.max(240, width - 48));
   const brushScale = $derived(d3.scaleLinear().domain([0, brushMax]).range([0, brushWidth]));
-  const rangePoints = $derived(visiblePoints.filter(({ game }) => isInRange(game)));
-  const rangePeakPoints = $derived(peakPoints.filter(({ game }) => isInRange(game)));
+  const rangePoints = $derived(visiblePoints.filter(({ game }) => isInRange(game) && matchesGameType(game)));
   let brushNode: SVGGElement | undefined;
   let brushBehavior: d3.BrushBehavior<unknown> | undefined;
 
@@ -114,7 +121,7 @@
     const position = chart === 'sales' ? ownersY(estimatedOwners(game) ?? 1)
       : chart === 'reviews' ? reviewsY(reviewCount(game))
       : chart === 'playtime' ? playtimeY(game.avg_playtime_forever)
-      : game.peak_ccu > 0 ? peakY(game.peak_ccu) : 0;
+      : sentimentY(positiveReviewPercent(game));
     return Math.max(0, Math.min(plotHeight - 60, position - 52));
   };
 
@@ -130,9 +137,10 @@
   };
   // Draw the selected game last so nearby points cannot cover it.
   const orderedPoints = $derived([...rangePoints].sort((a, b) => Number(isSelected(a.game)) - Number(isSelected(b.game))));
-  const orderedPeakPoints = $derived([...rangePeakPoints].sort((a, b) => Number(isSelected(a.game)) - Number(isSelected(b.game))));
-  const orderedSalesPoints = $derived(salesPoints.filter(({ game }) => isInRange(game))
+  const orderedSalesPoints = $derived(salesPoints.filter(({ game }) => isInRange(game) && matchesGameType(game))
     .sort((a, b) => Number(isSelected(a.game)) - Number(isSelected(b.game))));
+  const sentimentTooltipX = $derived(selectedPoint
+    ? Math.min(Math.max(reviewCountX(reviewCount(selectedPoint.game)) + 10, 0), Math.max(0, plotWidth - tooltipWidth)) : 0);
   const salesTooltipX = $derived(selectedPoint
     ? Math.min(Math.max(discountX(selectedPoint.game.discount_pct) + 10, 0), Math.max(0, plotWidth - tooltipWidth)) : 0);
 </script>
@@ -145,6 +153,11 @@
     </div>
   </div>
 
+  <div class="game-type-filter" role="group" aria-label="Filter scatterplots by game type">
+    <button class:active={gameType === 'all'} aria-pressed={gameType === 'all'} onclick={() => changeGameType('all')}>All games</button>
+    <button class:active={gameType === 'indie'} aria-pressed={gameType === 'indie'} onclick={() => changeGameType('indie')}>Indie only</button>
+    <button class:active={gameType === 'non-indie'} aria-pressed={gameType === 'non-indie'} onclick={() => changeGameType('non-indie')}>Non-indie only</button>
+  </div>
   <div class="legend" aria-label="Point color legend">
     <span><i class="swatch indie"></i>Indie</span>
     <span><i class="swatch non-indie"></i>Non-indie</span>
@@ -155,7 +168,7 @@
   {#if selectedPoint}
     <div class="selection-info" role="status">
       <strong>{selectedPoint.game.name}</strong>
-      <span>{priceLabel(selectedPoint.game)} &middot; {reviewCount(selectedPoint.game).toLocaleString()} reviews &middot; {formatPlaytime(selectedPoint.game.avg_playtime_forever)} average playtime &middot; {selectedPoint.game.peak_ccu > 0 ? `${selectedPoint.game.peak_ccu.toLocaleString()} peak players` : 'Peak players unavailable'}</span>
+      <span>{priceLabel(selectedPoint.game)} &middot; {reviewCount(selectedPoint.game).toLocaleString()} reviews &middot; {formatPlaytime(selectedPoint.game.avg_playtime_forever)} average playtime &middot; {positiveReviewPercent(selectedPoint.game).toFixed(1)}% positive reviews</span>
       <button onclick={() => selectedPoint = null}>Clear selection</button>
     </div>
   {/if}
@@ -164,7 +177,7 @@
     <p>No games with valid price, review-count, and playtime data are available.</p>
   {:else}
     {#if rangePoints.length === 0}
-      <p role="status">No games in the selected price range.</p>
+      <p role="status">No games match the selected game type and price range.</p>
     {/if}
     <div class="charts">
       <svg width={panelWidth} {height} role="img" aria-label="Scatterplot of price and review count, colored by indie status">
@@ -255,21 +268,21 @@
         </g>
       </svg>
 
-      <svg width={panelWidth} {height} role="img" aria-label="Scatterplot of price and peak concurrent players, colored by indie status">
+      <svg width={panelWidth} {height} role="img" aria-label="Scatterplot of review count and positive review percentage, colored by indie status">
         <g transform={`translate(${margin.left} ${margin.top})`}>
-          <text class="chart-title" x={plotWidth / 2} y={-14} text-anchor="middle">Price vs. Peak Concurrent Players</text>
-          {#each peakTicks as tick}
-            <line class="grid-line" x1="0" x2={plotWidth} y1={peakY(tick)} y2={peakY(tick)} />
-            <text class="tick-label" x={-10} y={peakY(tick)} text-anchor="end" dominant-baseline="middle">{formatReviews(tick)}</text>
+          <text class="chart-title" x={plotWidth / 2} y={-14} text-anchor="middle">Review Count vs. Positive Reviews</text>
+          {#each sentimentTicks as tick}
+            <line class="grid-line" x1="0" x2={plotWidth} y1={sentimentY(tick)} y2={sentimentY(tick)} />
+            <text class="tick-label" x={-10} y={sentimentY(tick)} text-anchor="end" dominant-baseline="middle">{tick}%</text>
           {/each}
-          {#each xTicks as tick}
-            <line class="grid-line" y1="0" y2={plotHeight} x1={x(tick)} x2={x(tick)} />
-            <text class="tick-label" x={x(tick)} y={plotHeight + 18} text-anchor="middle">${d3.format("~g")(tick)}</text>
+          {#each reviewCountTicks as tick}
+            <line class="grid-line" y1="0" y2={plotHeight} x1={reviewCountX(tick)} x2={reviewCountX(tick)} />
+            <text class="tick-label" x={reviewCountX(tick)} y={plotHeight + 18} text-anchor="middle">{formatReviews(tick)}</text>
           {/each}
-          {#each orderedPeakPoints as point}
+          {#each orderedPoints as point}
             <circle
-              cx={x(point.game.price_no_sales)}
-              cy={peakY(point.game.peak_ccu)}
+              cx={reviewCountX(reviewCount(point.game))}
+              cy={sentimentY(positiveReviewPercent(point.game))}
               r={isSelected(point.game) ? 7 : 4}
               fill={color(point.game)}
               opacity={selectedPoint ? isSelected(point.game) ? 1 : 0.12 : 0.75}
@@ -279,23 +292,23 @@
               tabindex="0"
               aria-label={`Select ${point.game.name}, ${priceLabel(point.game)}`}
               aria-pressed={isSelected(point.game)}
-              onclick={() => selectPoint(point.game, 'peak')}
-              onkeydown={(event) => pointKeydown(event, point.game, 'peak')}
+              onclick={() => selectPoint(point.game, 'sentiment')}
+              onkeydown={(event) => pointKeydown(event, point.game, 'sentiment')}
             >
             </circle>
           {/each}
           {#if selectedPoint && isInRange(selectedPoint.game)}
-            <g class="tooltip" transform={`translate(${tooltipX} ${tooltipY('peak')})`}>
+            <g class="tooltip" transform={`translate(${sentimentTooltipX} ${tooltipY('sentiment')})`}>
               <rect width={tooltipWidth} height="60" rx="4" />
               <text x="9" y="18">{selectedPoint.game.name}</text>
-              <text x="9" y="36">Price: {priceLabel(selectedPoint.game)}</text>
-              <text x="9" y="54">Peak CCU: {selectedPoint.game.peak_ccu > 0 ? selectedPoint.game.peak_ccu.toLocaleString() : 'Unavailable'}</text>
+              <text x="9" y="36">Reviews: {reviewCount(selectedPoint.game).toLocaleString()}</text>
+              <text x="9" y="54">Positive: {positiveReviewPercent(selectedPoint.game).toFixed(1)}%</text>
             </g>
           {/if}
           <line class="axis" x1="0" x2={plotWidth} y1={plotHeight} y2={plotHeight} />
           <line class="axis" x1="0" x2="0" y1="0" y2={plotHeight} />
-          <text class="axis-label" x={plotWidth / 2} y={plotHeight + 44} text-anchor="middle">Price (USD)</text>
-          <text class="axis-label" transform={`translate(${-58} ${plotHeight / 2}) rotate(-90)`} text-anchor="middle">Peak concurrent players (log scale)</text>
+          <text class="axis-label" x={plotWidth / 2} y={plotHeight + 44} text-anchor="middle">Review count (log scale)</text>
+          <text class="axis-label" transform={`translate(${-58} ${plotHeight / 2}) rotate(-90)`} text-anchor="middle">Positive reviews (%)</text>
         </g>
       </svg>
 
@@ -376,6 +389,10 @@
 </section>
 
 <style>
+  .game-type-filter { display: flex; flex-wrap: wrap; gap: 6px; }
+  .game-type-filter button { padding: 6px 12px; border: 1px solid #94a3b8; border-radius: 5px; background: white; color: #243247; font: inherit; font-size: 0.85rem; cursor: pointer; }
+  .game-type-filter button.active { background: #243247; border-color: #243247; color: white; }
+  .game-type-filter button:focus-visible { outline: 3px solid #0284c7; outline-offset: 2px; }
   circle[role="button"] { cursor: pointer; }
   circle[role="button"]:focus-visible { outline: 2px solid #172033; }
   .selection-help { font-size: 0.8rem; color: #475569; }
