@@ -16,7 +16,7 @@
 
   let games: SteamGame[] = $state.raw([]);
   let loading = $state(true);
-  let loadError = $state('');
+  let loadError = $state("");
 
   const parseList = (value: string | undefined) =>
     value
@@ -45,16 +45,16 @@
   onMount(async () => {
     try {
       // Generated from games_march2025_cleaned.csv by scripts/prepare_march2025.py.
-      games = await d3.csv('/games_march2025_visualizations.csv', (row) => ({
+      games = (await d3.csv("/games_march2025_visualizations.csv", (row) => ({
         app_id: parseRequiredNumber(row.app_id),
-        name: row.name ?? 'Unnamed game',
+        name: row.name ?? "Unnamed game",
         release_date: parseDate(row.release_date),
         coming_soon: parseBoolean(row.coming_soon),
         price_usd: parseRequiredNumber(row.price_usd),
         is_free: parseBoolean(row.is_free),
         discount_pct: parseRequiredNumber(row.discount_pct),
-        developer: row.developer ?? 'Unknown developer',
-        publisher: row.publisher ?? 'Unknown publisher',
+        developer: row.developer ?? "Unknown developer",
+        publisher: row.publisher ?? "Unknown publisher",
         genres: parseList(row.genres),
         categories: parseList(row.categories),
         tags: parseList(row.tags),
@@ -65,7 +65,7 @@
         recommendations: parseRequiredNumber(row.recommendations),
         positive_reviews: parseRequiredNumber(row.positive_reviews),
         negative_reviews: parseRequiredNumber(row.negative_reviews),
-        estimated_owners: row.estimated_owners ?? '',
+        estimated_owners: row.estimated_owners ?? "",
         avg_playtime_forever: parseRequiredNumber(row.avg_playtime_forever),
         avg_playtime_2weeks: parseRequiredNumber(row.avg_playtime_2weeks),
         median_playtime: parseRequiredNumber(row.median_playtime),
@@ -73,12 +73,13 @@
         required_age: parseRequiredNumber(row.required_age),
         dlc_count: parseRequiredNumber(row.dlc_count),
         achievements: parseRequiredNumber(row.achievements),
-        short_description: row.short_description ?? '',
-        header_image: row.header_image ?? '',
-        price_no_sales: parseRequiredNumber(row.price_no_sales)
-      })) as SteamGame[];
+        short_description: row.short_description ?? "",
+        header_image: row.header_image ?? "",
+        price_no_sales: parseRequiredNumber(row.price_no_sales),
+      }))) as SteamGame[];
     } catch (error) {
-      loadError = error instanceof Error ? error.message : 'Unable to load game data.';
+      loadError =
+        error instanceof Error ? error.message : "Unable to load game data.";
     } finally {
       loading = false;
     }
@@ -91,18 +92,13 @@
 {:else if loadError}
   <p role="alert">Could not load the March 2025 dataset: {loadError}</p>
 {:else}
-<main class="grid">
-  <Bar {games} />
-  <Bump {games} />
-  <Heatmap {games} />
-  <Ridgeline {games} />
-  <ParallelCoords {games} />
-  <SplitGenreReviews {games} />
-  <PriceTrend {games} />
-  <GPHeatmap {games} />
-  <PLPScatter {games} />
-  <Glyphs {games} />
-  <DeveloperSuccess {games} />
-</main>
-
+  <main class="grid">
+    <ParallelCoords {games} />
+    <SplitGenreReviews {games} />
+    <PriceTrend {games} />
+    <GPHeatmap {games} />
+    <PLPScatter {games} />
+    <Glyphs {games} />
+    <DeveloperSuccess {games} />
+  </main>
 {/if}
