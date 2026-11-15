@@ -6,12 +6,12 @@
   type MetricKey = 'playtimeSkew' | 'criticDisconnect' | 'value' | 'dlc' | 'discount';
   type Metric = { key: MetricKey; label: string; shortLabel: string };
   type MetricValues = Record<MetricKey, number | null>;
-  type Glyph = { key: string; company: string; group: Group; game: SteamGame; metrics: MetricValues; slot: number; slotCount: number };
+  type Glyph = { key: string; company: string; group: Group | null; game: SteamGame; metrics: MetricValues; slot: number; slotCount: number };
   type Scale = { low: number; high: number; usable: boolean };
 
   let { games }: Props = $props();
-  const AAA_COMPANIES = ['CAPCOM', 'Valve', 'Ubisoft Montreal', 'Square Enix', 'SEGA', 'FromSoftware', 'Techland'];
-  const INDIE_COMPANIES = ['Supergiant Games', 'Klei Entertainment', 'Rusty Lake', 'Fireproof Games', 'Croteam', 'Red Barrels', 'Tripwire Interactive'];
+  const AAA_COMPANIES = ['CAPCOM', 'FromSoftware', 'Ubisoft Montreal', 'DICE', 'Bethesda Game Studios', 'Larian Studios', 'Valve'];
+  const INDIE_COMPANIES = ['Facepunch Studios', 'Klei Entertainment', 'Unknown Worlds Entertainment', 'Maddy Makes Games / Extremely OK Games', 'Hopoo Games', 'Supergiant Games', 'Scott Cawthon'];
   const GROUPS: { name: Group; companies: string[] }[] = [{ name: 'AAA', companies: AAA_COMPANIES }, { name: 'Indie', companies: INDIE_COMPANIES }];
   const ALL_COMPANIES = GROUPS.flatMap((group) => group.companies);
   const COMPANY_GROUP = new Map<string, Group>([
@@ -40,7 +40,13 @@
     if (normalized.startsWith('ubisoft montreal')) return 'Ubisoft Montreal';
     if (normalized.startsWith('square enix')) return 'Square Enix';
     if (normalized.includes('fromsoftware')) return 'FromSoftware';
+    if (normalized.startsWith('maddy makes games')) return 'Maddy Makes Games / Extremely OK Games';
     return ALL_COMPANIES.find((company) => company.toLowerCase() === normalized) ?? null;
+  };
+  const companyForGame = (game: SteamGame) => normalizedCompany(game.developer) ?? (game.developer.trim() || 'Unknown developer');
+  const groupForGame = (game: SteamGame): Group | null => {
+    const company = normalizedCompany(game.developer);
+    return company ? COMPANY_GROUP.get(company) ?? null : null;
   };
   const gameMetrics = (game: SteamGame): MetricValues => {
     const reviews = totalReviews(game); const base = basePriceFor(game);
@@ -88,7 +94,8 @@
   const maxRadius = Math.min(rowHeight * 0.34, columnWidth * 0.3); const minRadius = 6;
   let selectedKeys = $state<string[]>([]); let replacementSlot = $state(0);
   let hoveredKey = $state<string | null>(null); let showFormulas = $state(false);
-  const selected = $derived(selectedKeys.map((key) => summaryByKey.get(key)).filter((value): value is Glyph => value !== undefined));
+  let searchSelection = $state<Glyph | null>(null);
+  const selected = $derived(searchSelection ? [searchSelection] : selectedKeys.map((key) => summaryByKey.get(key)).filter((value): value is Glyph => value !== undefined));
   const hasMatches = $derived(subset.length > 0);
   const radiusFor = (glyph: Glyph, key: MetricKey, radius = maxRadius) => {
     const value = glyph.metrics[key]; const scale = scales[key];
@@ -103,6 +110,7 @@
   }).filter((point): point is string => point !== null).join(' ');
   const isSelected = (key: string) => selectedKeys.includes(key);
   const activate = (glyph: Glyph) => {
+    searchSelection = null;
     const existingIndex = selectedKeys.indexOf(glyph.key);
     if (existingIndex >= 0) { selectedKeys = selectedKeys.filter((key) => key !== glyph.key); return; }
     if (selectedKeys.length < 2) { selectedKeys = [...selectedKeys, glyph.key]; return; }
@@ -112,11 +120,40 @@
   const onKeydown = (event: KeyboardEvent, glyph: Glyph) => {
     if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); activate(glyph); }
   };
-  const clearSelection = () => { selectedKeys = []; replacementSlot = 0; };
+  const clearSelection = () => { selectedKeys = []; replacementSlot = 0; searchSelection = null; };
   const toggleFormulaReference = () => { showFormulas = !showFormulas; };
   const companyX = (index: number) => margin.left + index * columnWidth + columnWidth / 2;
   const slotY = (slot: number, slotCount = 6) => margin.top + (6 - slotCount + slot) * rowHeight + rowHeight / 2;
   const metricDisplay = (value: number | null, key: MetricKey) => key === 'discount' || key === 'criticDisconnect' || key === 'playtimeSkew' ? formatPercent(value) : formatNumber(value, 1);
+  const normalizeTitle = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const editDistance = (first: string, second: string) => {
+    const previous = Array.from({ length: second.length + 1 }, (_, index) => index);
+    for (let row = 1; row <= first.length; row += 1) {
+      const current = [row];
+      for (let column = 1; column <= second.length; column += 1) current[column] = Math.min(current[column - 1] + 1, previous[column] + 1, previous[column - 1] + (first[row - 1] === second[column - 1] ? 0 : 1));
+      for (let column = 0; column <= second.length; column += 1) previous[column] = current[column];
+    }
+    return previous[second.length];
+  };
+  const searchScore = (name: string, query: string) => {
+    const title = normalizeTitle(name);
+    if (title === query) return 10000;
+    if (title.startsWith(query)) return 5000 - title.length;
+    if (title.includes(query)) return 2500 - title.length;
+    return 1000 - (editDistance(query, title) / Math.max(query.length, title.length, 1)) * 1000;
+  };
+  let searchQuery = $state('');
+  const searchMatches = $derived.by(() => {
+    const query = normalizeTitle(searchQuery);
+    if (!query) return [];
+    return games.filter((game) => normalizeTitle(game.name).includes(query) || searchScore(game.name, query) > 0).sort((first, second) => searchScore(second.name, query) - searchScore(first.name, query) || totalReviews(second) - totalReviews(first)).slice(0, 8);
+  });
+  const selectSearchGlyph = (game: SteamGame) => {
+    searchSelection = { key: `search|${game.app_id}`, company: companyForGame(game), group: groupForGame(game), game, metrics: gameMetrics(game), slot: 0, slotCount: 1 };
+    selectedKeys = [];
+    replacementSlot = 0;
+    searchQuery = game.name;
+  };
 </script>
 
 <section class=glyphs aria-labelledby=glyph-title>
@@ -138,7 +175,7 @@
           {@const index = ALL_COMPANIES.indexOf(glyph.company)}{@const x = companyX(index)}{@const y = slotY(glyph.slot, glyph.slotCount)}{@const key = glyph.key}{@const points = pointsFor(glyph)}
           <g class:active={isSelected(key) || hoveredKey === key} class:dimmed={selectedKeys.length > 0 && !isSelected(key)}>
             <title>{glyph.game.name}, {glyph.company}, {formatDate(glyph.game)}</title>
-            {#if points.split(' ').length >= 3}<polygon class={`glyph ${glyph.group.toLowerCase()}`} points={points} transform={`translate(${x} ${y})`} />{/if}
+            {#if points.split(' ').length >= 3}<polygon class={`glyph ${glyph.group?.toLowerCase() ?? 'unclassified'}`} points={points} transform={`translate(${x} ${y})`} />{/if}
             {#each METRICS as metric, metricIndex}{@const radius = radiusFor(glyph, metric.key)}{#if radius !== null}{@const angle = (-90 + metricIndex * 72) * Math.PI / 180}<circle class='vertex' cx={x + Math.cos(angle) * radius} cy={y + Math.sin(angle) * radius} r='1.8' />{/if}{/each}
             <rect class='hit-target' x={x - columnWidth * 0.42} y={y - rowHeight / 2} width={columnWidth * 0.84} height={rowHeight} tabindex='0' role='button' aria-pressed={isSelected(key)} aria-label={glyph.game.name + ', ' + glyph.company + ', game slot ' + (glyph.slot + 1)} onclick={() => activate(glyph)} onkeydown={(event) => onKeydown(event, glyph)} onmouseenter={() => hoveredKey = key} onmouseleave={() => hoveredKey = null} onfocus={() => hoveredKey = key} onblur={() => hoveredKey = null} />
           </g>
@@ -156,6 +193,21 @@
       </button>
       {#if showFormulas}<div id='glyph-formulas' class='formula-window' aria-live='polite'><p><strong>Playtime Skew:</strong> average / median playtime * 100.</p><p><strong>Disconnect:</strong> 100 - (metacritic - positive review share).</p><p><strong>Value:</strong> median playtime / base price.</p><p><strong>DLC:</strong> reported downloadable content count.</p><p><strong>Discount:</strong> current discount percentage.</p></div>{/if}
     </div></div>
+    <div class='exploration-panel' aria-labelledby='exploration-title'>
+      <h3 id='exploration-title'>Explore a game</h3>
+      <p>Search every game in the dataset by title. The closest matches update as you type.</p>
+      <label class='search-label' for='game-search'>Game title</label>
+      <input id='game-search' class='game-search' type='search' bind:value={searchQuery} placeholder='Search game titles...' autocomplete='off' />
+      {#if searchQuery.trim()}
+        <div class='search-results' aria-live='polite'>
+          {#if searchMatches.length}
+            {#each searchMatches as game}
+              <button class='search-result' type='button' onclick={() => selectSearchGlyph(game)}><span>{game.name}</span><small>{companyForGame(game)} · {formatNumber(totalReviews(game), 0)} reviews</small></button>
+            {/each}
+          {:else}<p class='search-empty'>No matching games found.</p>{/if}
+        </div>
+      {/if}
+    </div>
     <div class='legend' aria-label='Company group legend'><span class='legend-item'><span class='swatch aaa'></span> AAA</span><span class='legend-item'><span class='swatch indie'></span> Indie</span><span>Click or focus a glyph to select it. Two selections open a comparison.</span></div>
     <div class='selection-status' aria-live='polite'>{#if selected.length === 0}No games selected.{:else if selected.length === 1}Selected {selected[0].game.name} from {selected[0].company}.{:else}Comparing {selected[0].game.name} and {selected[1].game.name}.{/if}</div>
     {#snippet gameDetail(glyph: Glyph, enlarged = false)}
@@ -164,12 +216,12 @@
         {#if enlarged}
           {@const points = pointsFor(glyph, 90)}
           <svg class='detail-glyph' viewBox='-110 -110 220 220' role='img' aria-label='Enlarged metric glyph'>
-            {#if points.split(' ').length >= 3}<polygon class={`glyph ${glyph.group.toLowerCase()}`} points={points} />{/if}
+            {#if points.split(' ').length >= 3}<polygon class={`glyph ${glyph.group?.toLowerCase() ?? 'unclassified'}`} points={points} />{/if}
             {#each METRICS as metric, metricIndex}{@const radius = radiusFor(glyph, metric.key, 90)}{#if radius !== null}{@const angle = (-90 + metricIndex * 72) * Math.PI / 180}<circle class='vertex' cx={Math.cos(angle) * radius} cy={Math.sin(angle) * radius} r='3' />{/if}{/each}
           </svg>
         {/if}
         <h4>{game.name}</h4>
-        <p class='detail-meta'>{glyph.company} ({glyph.group}) · Released {formatDate(game)} · {formatNumber(totalReviews(game), 0)} total reviews</p>
+        <p class='detail-meta'>{glyph.company} ({glyph.group ?? 'Unclassified'}) · Released {formatDate(game)} · {formatNumber(totalReviews(game), 0)} total reviews</p>
         <span>Playtime Skew: {metricDisplay(glyph.metrics.playtimeSkew, 'playtimeSkew')} ({formatNumber(game.avg_playtime_forever / 60, 2)} hours average / {formatNumber(game.median_playtime / 60, 2)} hours median)</span>
         <span>User-critic Disconnect: {metricDisplay(glyph.metrics.criticDisconnect, 'criticDisconnect')} ({game.metacritic_score === null ? 'N/A' : formatNumber(game.metacritic_score, 0) + ' metacritic'} · {formatNumber(game.positive_reviews, 0)} positive / {formatNumber(game.negative_reviews, 0)} negative reviews)</span>
         <span>Hours-per-Dollar Value: {formatHoursPerDollar(game)} ({formatNumber(game.median_playtime / 60, 2)} hours median / {basePriceFor(game) === null ? 'N/A' : '$' + formatNumber(basePriceFor(game), 2) + ' base price'})</span>
@@ -177,7 +229,7 @@
       </article>
     {/snippet}
     {#if selected.length === 1}
-      <aside class='details' aria-labelledby='selected-heading'><div class='details-heading-row'><div><h3 id='selected-heading'>Selected game details</h3><p>All five plotted metrics and their raw inputs are shown below.</p></div><button class='clear-button' type='button' onclick={clearSelection}>Clear selection</button></div>{@render gameDetail(selected[0])}</aside>
+      <aside class='details' aria-labelledby='selected-heading'><div class='details-heading-row'><div><h3 id='selected-heading'>Selected game details</h3><p>All five plotted metrics and their raw inputs are shown below.</p></div><button class='clear-button' type='button' onclick={clearSelection}>Clear selection</button></div>{@render gameDetail(selected[0], true)}</aside>
     {:else if selected.length === 2}
       <aside class='details comparison' aria-labelledby='comparison-heading'><div class='details-heading-row'><div><h3 id='comparison-heading'>Glyph comparison</h3><p>Selected games are shown side by side using the same metric scales.</p></div><button class='clear-button' type='button' onclick={clearSelection}>Clear comparison</button></div><div class='comparison-grid'>{@render gameDetail(selected[0], true)}{@render gameDetail(selected[1], true)}</div></aside>
     {/if}
@@ -187,5 +239,5 @@
 <style>
   .glyphs{min-width:0}h2{margin-bottom:.2rem}.subtitle,.details p,.legend,.selection-status{color:#64748b;font-size:.82rem}svg{display:block;max-width:100%;height:auto;overflow:visible}.axis-label,.group-label{fill:#475569;font-size:11px;font-weight:600}.tick-label,.company-label{fill:#64748b;font-size:10px}.company-label{font-weight:600}.company-label.aaa,.aaa-group{fill:#075985}.company-label.indie,.indie-group{fill:#9a3412}.column-guide,.row-guide{stroke:#e2e8f0;stroke-width:1}.group-divider{stroke:#64748b;stroke-width:2}.glyph{fill-opacity:.65;stroke:#1e293b;stroke-width:1.25;transition:opacity 120ms ease,stroke-width 120ms ease}.glyph.aaa{fill:#0284c7}.glyph.indie{fill:#ea580c}.vertex{fill:#fff;stroke:#1e293b;stroke-width:1;pointer-events:none}.hit-target{fill:transparent;cursor:pointer;outline:none}g.active .glyph{fill-opacity:.9;stroke-width:2.5}g.active .hit-target:focus{stroke:#0f172a;stroke-width:2;stroke-dasharray:3 2}g.dimmed{opacity:.25}
   .legend{display:flex;flex-wrap:wrap;gap:.5rem 1rem;align-items:center;margin-top:.45rem}.legend-item{display:inline-flex;align-items:center;gap:.3rem}.swatch{width:.75rem;height:.75rem;border:1px solid #1e293b;display:inline-block}.swatch.aaa{background:#0284c7}.swatch.indie{background:#ea580c}.visual-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(15rem,18rem);gap:1rem;align-items:start}.chart-panel{min-width:0;overflow:visible}.chart-panel svg{width:100%;max-width:100%;height:auto}.reference-panel{min-width:0;padding:.65rem;border:1px solid #e2e8f0;background:#fff}.reference-trigger{display:block;width:100%;padding:0;border:0;background:transparent;color:inherit;cursor:pointer;text-align:left}.reference-trigger:focus-visible{outline:2px solid #0f172a;outline-offset:3px}.reference-heading{display:block;margin-bottom:.3rem;color:#0f172a;font-size:.9rem;font-weight:700}.reference-trigger svg{display:block;width:100%;height:auto}.reference-polygon{fill:#dbeafe;stroke:#1e293b;stroke-width:2}.reference-point{fill:#0284c7;stroke:#fff;stroke-width:2}.reference-label{fill:#475569;font-size:10px}.reference-hint{display:block;margin-top:.25rem;color:#64748b;font-size:.75rem}.formula-window{margin-top:.55rem;padding:.5rem;border-top:1px solid #e2e8f0;color:#475569;font-size:.72rem}.formula-window p{margin:.25rem 0}.formula-window strong{color:#0f172a}
-  .selection-status{margin-top:.6rem}.details{margin-top:.75rem;padding:.65rem .8rem;border-left:3px solid #94a3b8;background:#f8fafc;min-height:4rem}.details h3{margin:0;color:#0f172a}.details p{margin:.2rem 0 .55rem}.details-heading-row{display:flex;justify-content:space-between;gap:1rem;align-items:start}.clear-button{flex:none;padding:.35rem .55rem;border:1px solid #94a3b8;background:#fff;color:#334155;cursor:pointer}.clear-button:focus-visible{outline:2px solid #0f172a;outline-offset:2px}.comparison-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.75rem}.game-detail{display:grid;gap:.12rem;padding:.5rem;background:#fff;border:1px solid #e2e8f0;color:#475569;font-size:.78rem}.game-detail h4{margin:0 0 .15rem;color:#0f172a;font-size:.88rem}.detail-meta{color:#64748b}.detail-glyph{width:210px;height:210px;margin:0 auto .25rem}.empty-state{padding:1rem;background:#f8fafc;color:#64748b}@media(max-width:760px){.visual-row{grid-template-columns:1fr}.reference-panel{max-width:22rem}.comparison-grid{grid-template-columns:1fr}.details-heading-row{flex-direction:column}}
+  .selection-status{margin-top:.6rem}.exploration-panel{margin-top:.85rem;padding:.75rem;border:1px solid #e2e8f0;background:#f8fafc}.exploration-panel h3{margin:0;color:#0f172a}.exploration-panel p{margin:.2rem 0 .55rem;color:#64748b;font-size:.82rem}.search-label{display:block;margin-bottom:.25rem;color:#334155;font-size:.78rem;font-weight:600}.game-search{box-sizing:border-box;width:100%;padding:.5rem .6rem;border:1px solid #94a3b8;background:#fff;color:#0f172a;font:inherit}.game-search:focus-visible{outline:2px solid #0f172a;outline-offset:2px}.search-results{display:grid;gap:.35rem;margin-top:.5rem}.search-result{display:flex;justify-content:space-between;gap:1rem;width:100%;padding:.45rem .55rem;border:1px solid #cbd5e1;background:#fff;color:#0f172a;text-align:left;cursor:pointer}.search-result:hover,.search-result:focus-visible{border-color:#475569;background:#f1f5f9}.search-result small{color:#64748b}.search-empty{margin:0!important}.details{margin-top:.75rem;padding:.65rem .8rem;border-left:3px solid #94a3b8;background:#f8fafc;min-height:4rem}.details h3{margin:0;color:#0f172a}.details p{margin:.2rem 0 .55rem}.details-heading-row{display:flex;justify-content:space-between;gap:1rem;align-items:start}.clear-button{flex:none;padding:.35rem .55rem;border:1px solid #94a3b8;background:#fff;color:#334155;cursor:pointer}.clear-button:focus-visible{outline:2px solid #0f172a;outline-offset:2px}.comparison-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.75rem}.game-detail{display:grid;gap:.12rem;padding:.5rem;background:#fff;border:1px solid #e2e8f0;color:#475569;font-size:.78rem}.game-detail h4{margin:0 0 .15rem;color:#0f172a;font-size:.88rem}.detail-meta{color:#64748b}.detail-glyph{width:210px;height:210px;margin:0 auto .25rem}.empty-state{padding:1rem;background:#f8fafc;color:#64748b}@media(max-width:760px){.visual-row{grid-template-columns:1fr}.reference-panel{max-width:22rem}.comparison-grid{grid-template-columns:1fr}.details-heading-row{flex-direction:column}}
 </style>
