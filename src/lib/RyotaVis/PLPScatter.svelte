@@ -7,7 +7,7 @@
   type SelectedPoint = { game: SteamGame; chart: 'reviews' | 'sentiment' | 'playtime' };
 
   let { games, width = 1240, height = 420 }: Props = $props();
-  let selectedPrices = $state<[number, number] | null>([0, 100]);
+  let selectedReviews = $state<[number, number] | null>(null);
   let selectedPoint = $state<SelectedPoint | null>(null);
   let gameType = $state<GameType>('all');
 
@@ -52,7 +52,7 @@
     const onWheel = (event: WheelEvent) => {
       const [px, py] = d3.pointer(event, node);
       if (px < 0 || px > plotWidth || py < 0 || py > plotHeight || event.deltaY === 0) return;
-      const bounds: [number, number] = chart === 'sentiment' ? sentimentBaseX.domain() as [number, number] : selectedPrices ?? [0, brushMax];
+      const bounds: [number, number] = chart === 'sentiment' ? sentimentBaseX.domain() as [number, number] : [0, 100];
       if (bounds[1] <= bounds[0]) return;
       event.preventDefault();
       const sx = chart === 'reviews' ? reviewsX : chart === 'playtime' ? playtimePriceX : reviewCountX;
@@ -81,9 +81,9 @@
     return { destroy() { node.removeEventListener('wheel', onWheel); } };
   }
   // Keep the overview domain independent of the zoomed scatterplot axes.
-  const brushMax = 100;
-  const reviewsX = $derived(d3.scaleLinear().domain(reviewsZoom?.x ?? selectedPrices ?? [0, brushMax]).range([0, plotWidth]));
-  const playtimePriceX = $derived(d3.scaleLinear().domain(playtimeZoom?.x ?? selectedPrices ?? [0, brushMax]).range([0, plotWidth]));
+  const brushMax = $derived(Math.max(1, Math.ceil(maxReviews)));
+  const reviewsX = $derived(d3.scaleLinear().domain(reviewsZoom?.x ?? [0, 100]).range([0, plotWidth]));
+  const playtimePriceX = $derived(d3.scaleLinear().domain(playtimeZoom?.x ?? [0, 100]).range([0, plotWidth]));
   const reviewsY = $derived(d3.scaleLinear().domain(reviewsZoom?.y ?? [0, reviewLimit]).range([plotHeight, 0]));
   const positiveReviewPercent = (game: SteamGame) => game.positive_reviews / reviewCount(game) * 100;
   const sentimentBaseX = $derived(d3.scaleLog().domain([1, Math.max(10, maxReviews)]).nice());
@@ -97,8 +97,8 @@
   const sentimentTicks = $derived(sentimentY.ticks(5));
   const playtimeTicks = $derived(playtimeY.ticks(5));
 
-  const isInRange = (game: SteamGame) => selectedPrices === null ||
-    (game.price_no_sales >= selectedPrices[0] - 1e-8 && game.price_no_sales <= selectedPrices[1] + 1e-8);
+  const isInRange = (game: SteamGame) => selectedReviews === null ||
+    (reviewCount(game) >= selectedReviews[0] && reviewCount(game) <= selectedReviews[1]);
   const brushWidth = $derived(Math.max(240, width - 48));
   const brushScale = $derived(d3.scaleLinear().domain([0, brushMax]).range([0, brushWidth]));
   const rangePoints = $derived(visiblePoints.filter(({ game }) => isInRange(game) && matchesGameType(game)));
@@ -106,7 +106,7 @@
   let brushBehavior: d3.BrushBehavior<unknown> | undefined;
 
   // The action runs in the browser; resizing or new data rebuilds the brush extent.
-  function priceBrush(node: SVGGElement, settings: { width: number; max: number }) {
+  function reviewBrush(node: SVGGElement, settings: { width: number; max: number }) {
     brushNode = node;
     const setup = ({ width: barWidth, max }: typeof settings) => {
       const scale = d3.scaleLinear().domain([0, max]).range([0, barWidth]);
@@ -114,15 +114,15 @@
         .extent([[0, 0], [barWidth, 32]])
         .on('brush end', (event: d3.D3BrushEvent<unknown>) => {
           const selection = event.selection as [number, number] | null;
-          selectedPrices = selection ? [scale.invert(selection[0]), scale.invert(selection[1])] : null;
+          selectedReviews = selection ? [Math.round(scale.invert(selection[0])), Math.round(scale.invert(selection[1]))] : null;
           selectedPoint = null;
           reviewsZoom = null;
           playtimeZoom = null;
           sentimentZoom = null;
         });
       brushBehavior = behavior;
-      const range = selectedPrices
-        ? [Math.min(selectedPrices[0], max), Math.min(selectedPrices[1], max)]
+      const range = selectedReviews
+        ? [Math.min(selectedReviews[0], max), Math.min(selectedReviews[1], max)]
         : [0, max];
       d3.select(node).call(behavior).call(behavior.move, range.map(scale) as [number, number]);
     };
@@ -137,13 +137,13 @@
     };
   }
 
-  function movePriceRange(low: number, high: number) {
-    const range: [number, number] = [Math.max(0, Math.min(low, brushMax)), Math.max(0, Math.min(high, brushMax))];
+  function moveReviewRange(low: number, high: number) {
+    const range: [number, number] = [Math.round(Math.max(0, Math.min(low, brushMax))), Math.round(Math.max(0, Math.min(high, brushMax)))];
     range.sort((a, b) => a - b);
     reviewsZoom = null;
     playtimeZoom = null;
     sentimentZoom = null;
-    selectedPrices = range;
+    selectedReviews = range;
     selectedPoint = null;
     if (brushNode && brushBehavior) {
       d3.select(brushNode).call(brushBehavior.move, range.map(brushScale) as [number, number]);
@@ -224,7 +224,7 @@
     <p>No games with valid price, review-count, and playtime data are available.</p>
   {:else}
     {#if rangePoints.length === 0}
-      <p role="status">No games match the selected game type and price range.</p>
+      <p role="status">No games match the selected game type and review-count range.</p>
     {/if}
     <div class="charts">
       <svg width={panelWidth} {height} role="img" aria-label="Scatterplot of price and review count, colored by indie status">
@@ -366,31 +366,31 @@
 
 
     </div>
-    <div class="price-brush">
+    <div class="review-brush">
       <div class="brush-heading">
-        <strong>Brush price range</strong>
-        <span aria-live="polite">${(selectedPrices?.[0] ?? 0).toFixed(2)} &ndash; ${(selectedPrices?.[1] ?? brushMax).toFixed(2)} &middot; {rangePoints.length.toLocaleString()} visible games</span>
-        <button onclick={() => movePriceRange(0, brushMax)}>Reset range</button>
+        <strong>Brush review count</strong>
+        <span aria-live="polite">{(selectedReviews?.[0] ?? 0).toLocaleString()} &ndash; {(selectedReviews?.[1] ?? brushMax).toLocaleString()} reviews &middot; {rangePoints.length.toLocaleString()} visible games</span>
+        <button onclick={() => moveReviewRange(0, brushMax)}>Reset range</button>
       </div>
-      <p>Drag across the bar to zoom the price axes and filter games in all three plots. Drag the selection to move it, or its edges to resize.</p>
-      <svg class="brush-svg" width="100%" viewBox={`0 0 ${brushWidth + 48} 76`} role="group" aria-label="Select a continuous price range for all scatterplots">
+      <p>Drag across the bar to filter games by total review count in all three plots. Drag the selection to move it, or its edges to resize.</p>
+      <svg class="brush-svg" width="100%" viewBox={`0 0 ${brushWidth + 48} 76`} role="group" aria-label="Select a review-count range for all scatterplots">
         <g transform="translate(24 8)">
           <rect class="brush-track" width={brushWidth} height="32" rx="3" />
-          <g class="brush" use:priceBrush={{ width: brushWidth, max: brushMax }}></g>
+          <g class="brush" use:reviewBrush={{ width: brushWidth, max: brushMax }}></g>
           {#each brushScale.ticks(8) as tick}
             <line class="axis" x1={brushScale(tick)} x2={brushScale(tick)} y1="36" y2="41" />
-            <text class="tick-label" x={brushScale(tick)} y="56" text-anchor="middle">${d3.format("~g")(tick)}</text>
+            <text class="tick-label" x={brushScale(tick)} y="56" text-anchor="middle">{formatReviews(tick)}</text>
           {/each}
         </g>
       </svg>
       <div class="range-inputs">
-        <label>Minimum price ($)
-          <input type="number" min="0" max={brushMax} step="0.01" value={(selectedPrices?.[0] ?? 0).toFixed(2)}
-            onchange={(event) => { const value = event.currentTarget.valueAsNumber; if (Number.isFinite(value)) movePriceRange(Math.min(value, selectedPrices?.[1] ?? brushMax), selectedPrices?.[1] ?? brushMax); }} />
+        <label>Minimum reviews
+          <input type="number" min="0" max={brushMax} step="1" value={selectedReviews?.[0] ?? 0}
+            onchange={(event) => { const value = event.currentTarget.valueAsNumber; if (Number.isFinite(value)) moveReviewRange(Math.min(value, selectedReviews?.[1] ?? brushMax), selectedReviews?.[1] ?? brushMax); }} />
         </label>
-        <label>Maximum price ($)
-          <input type="number" min="0" max={brushMax} step="0.01" value={(selectedPrices?.[1] ?? brushMax).toFixed(2)}
-            onchange={(event) => { const value = event.currentTarget.valueAsNumber; if (Number.isFinite(value)) movePriceRange(selectedPrices?.[0] ?? 0, Math.max(value, selectedPrices?.[0] ?? 0)); }} />
+        <label>Maximum reviews
+          <input type="number" min="0" max={brushMax} step="1" value={selectedReviews?.[1] ?? brushMax}
+            onchange={(event) => { const value = event.currentTarget.valueAsNumber; if (Number.isFinite(value)) moveReviewRange(selectedReviews?.[0] ?? 0, Math.max(value, selectedReviews?.[0] ?? 0)); }} />
         </label>
       </div>
     </div>
@@ -420,9 +420,9 @@
   .header { display: block; }
   h2 { margin: 0 0 0.25rem; }
   .legend span { display: inline-flex; align-items: center; gap: 0.3rem; color: #243247; font-size: 0.78rem; white-space: nowrap; }
-  .price-brush { margin-top: 24px; padding: 16px; border: 1px solid #cbd5e1; border-radius: 6px; }
+  .review-brush { margin-top: 24px; padding: 16px; border: 1px solid #cbd5e1; border-radius: 6px; }
   .brush-heading, .range-inputs { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
-  .brush-heading span, .price-brush p { font-size: 0.8rem; color: #475569; }
+  .brush-heading span, .review-brush p { font-size: 0.8rem; color: #475569; }
   .brush-heading button { margin-left: auto; padding: 5px 10px; border: 1px solid #94a3b8; border-radius: 4px; background: white; cursor: pointer; }
   .brush-track { fill: #e2e8f0; }
   .brush-svg { touch-action: none; }
