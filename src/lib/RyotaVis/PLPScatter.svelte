@@ -47,6 +47,35 @@
   let playtimeZoom = $state<PlotZoom | null>(null);
   const reviewLimit = 100_000;
   const playtimeLimit = 166.7 * 60;
+  function wheelZoom(node: SVGGElement, chart: 'reviews' | 'playtime') {
+    const onWheel = (event: WheelEvent) => {
+      const [px, py] = d3.pointer(event, node);
+      if (px < 0 || px > plotWidth || py < 0 || py > plotHeight || event.deltaY === 0) return;
+      const bounds: [number, number] = selectedPrices ?? [0, brushMax];
+      if (bounds[1] <= bounds[0]) return;
+      event.preventDefault();
+      const sx = chart === 'reviews' ? reviewsX : playtimePriceX;
+      const sy = chart === 'reviews' ? reviewsY : playtimeY;
+      const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? plotHeight : 1);
+      const factor = Math.exp(Math.max(-1, Math.min(1, delta * 0.002)));
+      const zoomDomain = (domain: number[], anchor: number, limits: [number, number]): [number, number] => {
+        const fullSpan = limits[1] - limits[0];
+        const span = domain[1] - domain[0];
+        const nextSpan = Math.max(fullSpan / 10000, Math.min(fullSpan, span * factor));
+        const low = Math.max(limits[0], Math.min(limits[1] - nextSpan, anchor - (anchor - domain[0]) / span * nextSpan));
+        return [low, low + nextSpan];
+      };
+      const zoom: PlotZoom = {
+        x: zoomDomain(sx.domain(), sx.invert(px), bounds),
+        y: zoomDomain(sy.domain(), sy.invert(py), [0, chart === 'reviews' ? reviewLimit : playtimeLimit])
+      };
+      if (chart === 'reviews') reviewsZoom = zoom;
+      else playtimeZoom = zoom;
+      selectedPoint = null;
+    };
+    node.addEventListener('wheel', onWheel, { passive: false });
+    return { destroy() { node.removeEventListener('wheel', onWheel); } };
+  }
   function sectionBrush(node: SVGGElement, settings: { width: number; height: number; chart: 'reviews' | 'playtime' }) {
     const setup = ({ width, height, chart }: typeof settings) => {
       const brush = d3.brush<unknown>().extent([[0, 0], [width, height]])
@@ -192,7 +221,7 @@
   <p class="selection-help">Click a point to compare that game across all plots. Click it again or clear the selection to deselect.</p>
   <p class="selection-help">Minimum: 1 review in the first plot.</p>
   <p class="selection-help">All plots show a random 40% sample of eligible indie games and 40% of eligible non-indie games.</p>
-  <p class="selection-help">The top plots use linear scales, excluding games above 100,000 reviews in the first and 166.7 hours of average playtime in the second. Drag a rectangle on either plot's background to zoom into a section.</p>
+  <p class="selection-help">The top plots use linear scales, excluding games above 100,000 reviews in the first and 166.7 hours of average playtime in the second. Scroll up over either plot to zoom in at the cursor, or scroll down to zoom out. You can also drag a rectangle on the background to zoom into a section.</p>
   <button onclick={() => { reviewsZoom = null; playtimeZoom = null; selectedPoint = null; }}>Reset top plots zoom</button>
   {#if selectedPoint}
     <div class="selection-info" role="status">
@@ -210,7 +239,7 @@
     {/if}
     <div class="charts">
       <svg width={panelWidth} {height} role="img" aria-label="Scatterplot of price and review count, colored by indie status">
-        <g transform={`translate(${margin.left} ${margin.top})`}>
+        <g use:wheelZoom={'reviews'} transform={`translate(${margin.left} ${margin.top})`}>
           <text class="chart-title" x={plotWidth / 2} y={-14} text-anchor="middle">Price vs. Review Count</text>
           <g class="section-brush" use:sectionBrush={{ width: plotWidth, height: plotHeight, chart: 'reviews' }}></g>
           {#each reviewTicks as tick}
@@ -255,7 +284,7 @@
       </svg>
 
       <svg width={panelWidth} {height} role="img" aria-label="Scatterplot of price and playtime, colored by indie status">
-        <g transform={`translate(${margin.left} ${margin.top})`}>
+        <g use:wheelZoom={'playtime'} transform={`translate(${margin.left} ${margin.top})`}>
           <text class="chart-title" x={plotWidth / 2} y={-14} text-anchor="middle">Price vs. Playtime</text>
           <g class="section-brush" use:sectionBrush={{ width: plotWidth, height: plotHeight, chart: 'playtime' }}></g>
           {#each playtimeTicks as tick}
