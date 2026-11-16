@@ -95,11 +95,11 @@
 {:else}
   <main class="grid">
     <ParallelCoords {games} />
-    <SplitGenreReviews {games} />
+    <PLPScatter {games} />
     <PriceTrend {games} />
     <GPHeatmap {games} />
-    <PLPScatter {games} />
-    <Glyphs {games} />
+    <SplitGenreReviews {games} />
     <DeveloperSuccess {games} />
+    <Glyphs {games} />
   </main>
 {/if}
