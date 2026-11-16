@@ -1,6 +1,7 @@
 ﻿<script lang="ts">
   import * as d3 from "d3";
   import { onMount } from "svelte";
+  import { asset } from "$app/paths";
   import Bar from "$lib/RyotaVis/Bar.svelte";
   import Bump from "$lib/RyotaVis/Bump.svelte";
   import Heatmap from "$lib/RyotaVis/Heatmap.svelte";
@@ -45,7 +46,7 @@
   onMount(async () => {
     try {
       // Generated from games_march2025_cleaned.csv by scripts/prepare_march2025.py.
-      games = (await d3.csv("/games_march2025_visualizations.csv", (row) => ({
+      games = (await d3.csv(asset("/games_march2025_visualizations.csv"), (row) => ({
         app_id: parseRequiredNumber(row.app_id),
         name: row.name ?? "Unnamed game",
         release_date: parseDate(row.release_date),
