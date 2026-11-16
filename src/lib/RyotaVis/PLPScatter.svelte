@@ -45,17 +45,18 @@
   type PlotZoom = { x: [number, number]; y: [number, number] };
   let reviewsZoom = $state<PlotZoom | null>(null);
   let playtimeZoom = $state<PlotZoom | null>(null);
+  let sentimentZoom = $state<PlotZoom | null>(null);
   const reviewLimit = 100_000;
   const playtimeLimit = 166.7 * 60;
-  function wheelZoom(node: SVGGElement, chart: 'reviews' | 'playtime') {
+  function wheelZoom(node: SVGGElement, chart: SelectedPoint['chart']) {
     const onWheel = (event: WheelEvent) => {
       const [px, py] = d3.pointer(event, node);
       if (px < 0 || px > plotWidth || py < 0 || py > plotHeight || event.deltaY === 0) return;
-      const bounds: [number, number] = selectedPrices ?? [0, brushMax];
+      const bounds: [number, number] = chart === 'sentiment' ? sentimentBaseX.domain() as [number, number] : selectedPrices ?? [0, brushMax];
       if (bounds[1] <= bounds[0]) return;
       event.preventDefault();
-      const sx = chart === 'reviews' ? reviewsX : playtimePriceX;
-      const sy = chart === 'reviews' ? reviewsY : playtimeY;
+      const sx = chart === 'reviews' ? reviewsX : chart === 'playtime' ? playtimePriceX : reviewCountX;
+      const sy = chart === 'reviews' ? reviewsY : chart === 'playtime' ? playtimeY : sentimentY;
       const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? plotHeight : 1);
       const factor = Math.exp(Math.max(-1, Math.min(1, delta * 0.002)));
       const zoomDomain = (domain: number[], anchor: number, limits: [number, number]): [number, number] => {
@@ -66,36 +67,18 @@
         return [low, low + nextSpan];
       };
       const zoom: PlotZoom = {
-        x: zoomDomain(sx.domain(), sx.invert(px), bounds),
-        y: zoomDomain(sy.domain(), sy.invert(py), [0, chart === 'reviews' ? reviewLimit : playtimeLimit])
+        x: chart === 'sentiment'
+          ? zoomDomain(sx.domain().map(Math.log), Math.log(sx.invert(px)), bounds.map(Math.log) as [number, number]).map(Math.exp) as [number, number]
+          : zoomDomain(sx.domain(), sx.invert(px), bounds),
+        y: zoomDomain(sy.domain(), sy.invert(py), [0, chart === 'reviews' ? reviewLimit : chart === 'playtime' ? playtimeLimit : 100])
       };
       if (chart === 'reviews') reviewsZoom = zoom;
-      else playtimeZoom = zoom;
+      else if (chart === 'playtime') playtimeZoom = zoom;
+      else sentimentZoom = zoom;
       selectedPoint = null;
     };
     node.addEventListener('wheel', onWheel, { passive: false });
     return { destroy() { node.removeEventListener('wheel', onWheel); } };
-  }
-  function sectionBrush(node: SVGGElement, settings: { width: number; height: number; chart: 'reviews' | 'playtime' }) {
-    const setup = ({ width, height, chart }: typeof settings) => {
-      const brush = d3.brush<unknown>().extent([[0, 0], [width, height]])
-        .on('end', (event: d3.D3BrushEvent<unknown>) => {
-          if (!event.sourceEvent || !event.selection) return;
-          const [[x0, y0], [x1, y1]] = event.selection as [[number, number], [number, number]];
-          if (x1 - x0 >= 5 && y1 - y0 >= 5) {
-            const sx = chart === 'reviews' ? reviewsX : playtimePriceX;
-            const sy = chart === 'reviews' ? reviewsY : playtimeY;
-            const zoom: PlotZoom = { x: [sx.invert(x0), sx.invert(x1)], y: [sy.invert(y1), sy.invert(y0)] };
-            if (chart === 'reviews') reviewsZoom = zoom;
-            else playtimeZoom = zoom;
-            selectedPoint = null;
-          }
-          d3.select(node).call(brush.move, null);
-        });
-      d3.select(node).call(brush);
-    };
-    setup(settings);
-    return { update: setup, destroy() { d3.select(node).on('.brush', null); } };
   }
   // Keep the overview domain independent of the zoomed scatterplot axes.
   const brushMax = 100;
@@ -103,8 +86,9 @@
   const playtimePriceX = $derived(d3.scaleLinear().domain(playtimeZoom?.x ?? selectedPrices ?? [0, brushMax]).range([0, plotWidth]));
   const reviewsY = $derived(d3.scaleLinear().domain(reviewsZoom?.y ?? [0, reviewLimit]).range([plotHeight, 0]));
   const positiveReviewPercent = (game: SteamGame) => game.positive_reviews / reviewCount(game) * 100;
-  const reviewCountX = $derived(d3.scaleLog().domain([1, Math.max(1, maxReviews)]).nice().range([0, plotWidth]));
-  const sentimentY = $derived(d3.scaleLinear().domain([0, 100]).range([plotHeight, 0]));
+  const sentimentBaseX = $derived(d3.scaleLog().domain([1, Math.max(10, maxReviews)]).nice());
+  const reviewCountX = $derived(d3.scaleLog().domain(sentimentZoom?.x ?? sentimentBaseX.domain()).range([0, plotWidth]));
+  const sentimentY = $derived(d3.scaleLinear().domain(sentimentZoom?.y ?? [0, 100]).range([plotHeight, 0]));
   const reviewCountTicks = $derived(reviewCountX.ticks(5));
   const playtimeY = $derived(d3.scaleLinear().domain(playtimeZoom?.y ?? [0, playtimeLimit]).range([plotHeight, 0]));
   const reviewPriceTicks = $derived(reviewsX.ticks(5));
@@ -134,6 +118,7 @@
           selectedPoint = null;
           reviewsZoom = null;
           playtimeZoom = null;
+          sentimentZoom = null;
         });
       brushBehavior = behavior;
       const range = selectedPrices
@@ -157,6 +142,7 @@
     range.sort((a, b) => a - b);
     reviewsZoom = null;
     playtimeZoom = null;
+    sentimentZoom = null;
     selectedPrices = range;
     selectedPoint = null;
     if (brushNode && brushBehavior) {
@@ -195,6 +181,9 @@
   const playtimePoints = $derived(orderedPoints.filter(({ game }) => game.avg_playtime_forever <= playtimeLimit && inPlot(game, playtimePriceX, playtimeY, game.avg_playtime_forever)));
   const plotTooltipX = (chart: 'reviews' | 'playtime') => selectedPoint
     ? Math.min(Math.max((chart === 'reviews' ? reviewsX : playtimePriceX)(selectedPoint.game.price_no_sales) + 10, 0), Math.max(0, plotWidth - tooltipWidth)) : 0;
+  const sentimentPoints = $derived(orderedPoints.filter(({ game }) =>
+    reviewCountX(reviewCount(game)) >= -1e-8 && reviewCountX(reviewCount(game)) <= plotWidth + 1e-8 &&
+    sentimentY(positiveReviewPercent(game)) >= -1e-8 && sentimentY(positiveReviewPercent(game)) <= plotHeight + 1e-8));
   const sentimentTooltipX = $derived(selectedPoint
     ? Math.min(Math.max(reviewCountX(reviewCount(selectedPoint.game)) + 10, 0), Math.max(0, plotWidth - tooltipWidth)) : 0);
 </script>
@@ -221,8 +210,8 @@
   <p class="selection-help">Click a point to compare that game across all plots. Click it again or clear the selection to deselect.</p>
   <p class="selection-help">Minimum: 1 review in the first plot.</p>
   <p class="selection-help">All plots show a random 40% sample of eligible indie games and 40% of eligible non-indie games.</p>
-  <p class="selection-help">The top plots use linear scales, excluding games above 100,000 reviews in the first and 166.7 hours of average playtime in the second. Scroll up over either plot to zoom in at the cursor, or scroll down to zoom out. You can also drag a rectangle on the background to zoom into a section.</p>
-  <button onclick={() => { reviewsZoom = null; playtimeZoom = null; selectedPoint = null; }}>Reset top plots zoom</button>
+  <p class="selection-help">The top plots use linear scales, excluding games above 100,000 reviews in the first and 166.7 hours of average playtime in the second. Scroll up over any plot to zoom in at the cursor, or scroll down to zoom out.</p>
+  <button onclick={() => { reviewsZoom = null; playtimeZoom = null; sentimentZoom = null; selectedPoint = null; }}>Reset all plots zoom</button>
   {#if selectedPoint}
     <div class="selection-info" role="status">
       <strong>{selectedPoint.game.name}</strong>
@@ -241,7 +230,7 @@
       <svg width={panelWidth} {height} role="img" aria-label="Scatterplot of price and review count, colored by indie status">
         <g use:wheelZoom={'reviews'} transform={`translate(${margin.left} ${margin.top})`}>
           <text class="chart-title" x={plotWidth / 2} y={-14} text-anchor="middle">Price vs. Review Count</text>
-          <g class="section-brush" use:sectionBrush={{ width: plotWidth, height: plotHeight, chart: 'reviews' }}></g>
+          <rect width={plotWidth} height={plotHeight} fill="transparent" />
           {#each reviewTicks as tick}
             <line class="grid-line" x1="0" x2={plotWidth} y1={reviewsY(tick)} y2={reviewsY(tick)} />
             <text class="tick-label" x={-10} y={reviewsY(tick)} text-anchor="end" dominant-baseline="middle">{formatReviews(tick)}</text>
@@ -286,7 +275,7 @@
       <svg width={panelWidth} {height} role="img" aria-label="Scatterplot of price and playtime, colored by indie status">
         <g use:wheelZoom={'playtime'} transform={`translate(${margin.left} ${margin.top})`}>
           <text class="chart-title" x={plotWidth / 2} y={-14} text-anchor="middle">Price vs. Playtime</text>
-          <g class="section-brush" use:sectionBrush={{ width: plotWidth, height: plotHeight, chart: 'playtime' }}></g>
+          <rect width={plotWidth} height={plotHeight} fill="transparent" />
           {#each playtimeTicks as tick}
             <line class="grid-line" x1="0" x2={plotWidth} y1={playtimeY(tick)} y2={playtimeY(tick)} />
             <text class="tick-label" x={-10} y={playtimeY(tick)} text-anchor="end" dominant-baseline="middle">{d3.format('~g')(tick / 60)}</text>
@@ -329,7 +318,8 @@
       </svg>
 
       <svg width={panelWidth} {height} role="img" aria-label="Scatterplot of review count and positive review percentage, colored by indie status">
-        <g transform={`translate(${margin.left} ${margin.top})`}>
+        <g use:wheelZoom={'sentiment'} transform={`translate(${margin.left} ${margin.top})`}>
+          <rect width={plotWidth} height={plotHeight} fill="transparent" />
           <text class="chart-title" x={plotWidth / 2} y={-14} text-anchor="middle">Review Count vs. Positive Reviews</text>
           {#each sentimentTicks as tick}
             <line class="grid-line" x1="0" x2={plotWidth} y1={sentimentY(tick)} y2={sentimentY(tick)} />
@@ -339,7 +329,7 @@
             <line class="grid-line" y1="0" y2={plotHeight} x1={reviewCountX(tick)} x2={reviewCountX(tick)} />
             <text class="tick-label" x={reviewCountX(tick)} y={plotHeight + 18} text-anchor="middle">{formatReviews(tick)}</text>
           {/each}
-          {#each orderedPoints as point}
+          {#each sentimentPoints as point}
             <circle
               cx={reviewCountX(reviewCount(point.game))}
               cy={sentimentY(positiveReviewPercent(point.game))}
@@ -357,7 +347,7 @@
             >
             </circle>
           {/each}
-          {#if selectedPoint && isInRange(selectedPoint.game)}
+          {#if selectedPoint && sentimentPoints.some(({ game }) => game.app_id === selectedPoint?.game.app_id)}
             <g class="tooltip" transform={`translate(${sentimentTooltipX} ${tooltipY('sentiment')})`}>
               <rect width={tooltipWidth} height="60" rx="4" />
               <text x="9" y="18">{selectedPoint.game.name}</text>
@@ -414,7 +404,6 @@
 
 <style>
   .grid-line, .tick-label { pointer-events: none; }
-  .section-brush :global(.selection) { fill: #0284c7; fill-opacity: 0.2; stroke: #0284c7; }
   .analysis { width: 100%; margin: 24px 0 0; padding-top: 16px; border-top: 1px solid #e2e8f0; box-sizing: border-box; }
   .analysis h3 { margin: 0 0 8px; text-align: left; font-size: 1rem; }
   .analysis p { margin: 0 0 12px; line-height: 1.7; color: #334155; }
