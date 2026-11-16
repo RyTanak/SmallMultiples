@@ -51,12 +51,34 @@
     if (bounds.length === 2 && bounds[0] > bounds[1]) return null;
     return d3.mean(bounds) ?? null;
   };
-  const ownerSample = $derived(visiblePoints.filter(({ game }) => (estimatedOwners(game) ?? 0) > 0));
-  const maxOwners = $derived(d3.max(ownerSample, ({ game }) => estimatedOwners(game)!) ?? 10);
-  const playtimeX = $derived(d3.scaleLog().domain([1, Math.max(10, maxPlaytime)]).nice().range([0, plotWidth]));
-  const ownersY = $derived(d3.scaleLog().domain([1, Math.max(10, maxOwners)]).nice().range([plotHeight, 0]));
+  const maxOwnerPlaytime = 166.7 * 60;
+  const ownerLimit = 100_000;
+  const matchesOwnerLimits = (game: SteamGame) => {
+    const owners = estimatedOwners(game);
+    return owners !== null && owners > 0 && owners <= ownerLimit && game.avg_playtime_forever <= maxOwnerPlaytime;
+  };
+  let ownerZoom = $state<{ x: [number, number]; y: [number, number] } | null>(null);
+  const playtimeX = $derived(d3.scaleLinear().domain(ownerZoom?.x ?? [0, maxOwnerPlaytime]).range([0, plotWidth]));
+  const ownersY = $derived(d3.scaleLinear().domain(ownerZoom?.y ?? [0, ownerLimit]).range([plotHeight, 0]));
   const playtimeXTicks = $derived(playtimeX.ticks(5));
   const ownersTicks = $derived(ownersY.ticks(5));
+  function ownerBrush(node: SVGGElement, size: { width: number; height: number }) {
+    const setup = ({ width, height }: typeof size) => {
+      const brush = d3.brush<unknown>().extent([[0, 0], [width, height]])
+        .on('end', (event: d3.D3BrushEvent<unknown>) => {
+          if (!event.sourceEvent || !event.selection) return;
+          const [[x0, y0], [x1, y1]] = event.selection as [[number, number], [number, number]];
+          if (x1 - x0 >= 5 && y1 - y0 >= 5) {
+            ownerZoom = { x: [playtimeX.invert(x0), playtimeX.invert(x1)], y: [ownersY.invert(y1), ownersY.invert(y0)] };
+            selectedPoint = null;
+          }
+          d3.select(node).call(brush.move, null);
+        });
+      d3.select(node).call(brush);
+    };
+    setup(size);
+    return { update: setup, destroy() { d3.select(node).on('.brush', null); } };
+  }
   // Keep the overview domain independent of the zoomed scatterplot axes.
   const brushMax = 100;
   const x = $derived(d3.scaleLinear().domain(selectedPrices ?? [0, brushMax]).range([0, plotWidth]));
@@ -145,7 +167,9 @@
   };
   // Draw the selected game last so nearby points cannot cover it.
   const orderedPoints = $derived([...rangePoints].sort((a, b) => Number(isSelected(a.game)) - Number(isSelected(b.game))));
-  const ownerPoints = $derived(orderedPoints.filter(({ game }) => (estimatedOwners(game) ?? 0) > 0));
+  const ownerPoints = $derived(orderedPoints.filter(({ game }) => matchesOwnerLimits(game) &&
+    playtimeX(game.avg_playtime_forever) >= 0 && playtimeX(game.avg_playtime_forever) <= plotWidth &&
+    ownersY(estimatedOwners(game)!) >= 0 && ownersY(estimatedOwners(game)!) <= plotHeight));
   const ownersTooltipX = $derived(selectedPoint
     ? Math.min(Math.max(playtimeX(selectedPoint.game.avg_playtime_forever) + 10, 0), Math.max(0, plotWidth - tooltipWidth)) : 0);
   const sentimentTooltipX = $derived(selectedPoint
@@ -174,7 +198,8 @@
   <p class="selection-help">Click a point to compare that game across all plots. Click it again or clear the selection to deselect.</p>
   <p class="selection-help">Minimum: 1 review in the first plot.</p>
   <p class="selection-help">All plots show a random 40% sample of eligible indie games and 40% of eligible non-indie games.</p>
-  <p class="selection-help">Estimated owners use the midpoint of each reported range; games with missing or zero estimates are omitted from the fourth plot.</p>
+  <p class="selection-help">The fourth plot uses owner-range midpoints and excludes missing or zero estimates, estimates above 100,000 owners, and average playtime above 166.7 hours. Drag a rectangle on its background to zoom into a section; repeat to zoom further.</p>
+  <button onclick={() => { ownerZoom = null; selectedPoint = null; }}>Reset playtime / owners zoom</button>
   {#if selectedPoint}
     <div class="selection-info" role="status">
       <strong>{selectedPoint.game.name}</strong>
@@ -325,16 +350,17 @@
       <svg width={panelWidth} {height} role="img" aria-label="Scatterplot of average playtime and estimated owners, colored by indie status">
         <g transform={`translate(${margin.left} ${margin.top})`}>
           <text class="chart-title" x={plotWidth / 2} y={-14} text-anchor="middle">Playtime vs. Estimated Owners</text>
+          <g class="owner-brush" use:ownerBrush={{ width: plotWidth, height: plotHeight }}></g>
           {#each ownersTicks as tick}
             <line class="grid-line" x1="0" x2={plotWidth} y1={ownersY(tick)} y2={ownersY(tick)} />
             <text class="tick-label" x={-10} y={ownersY(tick)} text-anchor="end" dominant-baseline="middle">{formatReviews(tick)}</text>
           {/each}
           {#each playtimeXTicks as tick}
             <line class="grid-line" y1="0" y2={plotHeight} x1={playtimeX(tick)} x2={playtimeX(tick)} />
-            <text class="tick-label" x={playtimeX(tick)} y={plotHeight + 18} text-anchor="middle">{formatPlaytime(tick)}</text>
+            <text class="tick-label" x={playtimeX(tick)} y={plotHeight + 18} text-anchor="middle">{d3.format('~g')(tick / 60)}</text>
           {/each}
           {#if ownerPoints.length === 0}
-            <text class="tick-label" x={plotWidth / 2} y={plotHeight / 2} text-anchor="middle">No games with positive estimated owners in this selection.</text>
+            <text class="tick-label" x={plotWidth / 2} y={plotHeight / 2} text-anchor="middle">No games in this section. Reset zoom or adjust filters.</text>
           {/if}
           {#each ownerPoints as point}
             <circle
@@ -354,7 +380,7 @@
             >
             </circle>
           {/each}
-          {#if selectedPoint && isInRange(selectedPoint.game) && (estimatedOwners(selectedPoint.game) ?? 0) > 0}
+          {#if selectedPoint && ownerPoints.some(({ game }) => game.app_id === selectedPoint?.game.app_id)}
             <g class="tooltip" transform={`translate(${ownersTooltipX} ${tooltipY('owners')})`}>
               <rect width={tooltipWidth} height="60" rx="4" />
               <text x="9" y="18">{selectedPoint.game.name}</text>
@@ -364,8 +390,8 @@
           {/if}
           <line class="axis" x1="0" x2={plotWidth} y1={plotHeight} y2={plotHeight} />
           <line class="axis" x1="0" x2="0" y1="0" y2={plotHeight} />
-          <text class="axis-label" x={plotWidth / 2} y={plotHeight + 44} text-anchor="middle">Average playtime (log scale)</text>
-          <text class="axis-label" transform={`translate(${-58} ${plotHeight / 2}) rotate(-90)`} text-anchor="middle">Estimated owners (log scale)</text>
+          <text class="axis-label" x={plotWidth / 2} y={plotHeight + 44} text-anchor="middle">Average playtime (hours)</text>
+          <text class="axis-label" transform={`translate(${-58} ${plotHeight / 2}) rotate(-90)`} text-anchor="middle">Estimated owners</text>
         </g>
       </svg>
 
@@ -408,6 +434,8 @@
 </section>
 
 <style>
+  .grid-line, .tick-label { pointer-events: none; }
+  .owner-brush :global(.selection) { fill: #0284c7; fill-opacity: 0.2; stroke: #0284c7; }
   .analysis { width: 100%; margin: 24px 0 0; padding-top: 16px; border-top: 1px solid #e2e8f0; box-sizing: border-box; }
   .analysis h3 { margin: 0 0 8px; text-align: left; font-size: 1rem; }
   .analysis p { margin: 0 0 12px; line-height: 1.7; color: #334155; }
