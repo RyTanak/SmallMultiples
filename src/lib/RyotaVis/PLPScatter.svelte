@@ -81,7 +81,7 @@
     return { destroy() { node.removeEventListener('wheel', onWheel); } };
   }
   // Keep the threshold range independent of zoom and the active threshold.
-  const thresholdMax = $derived(Math.max(1, Math.ceil(maxReviews)));
+  const thresholdMax = $derived(Math.max(1, Math.round(d3.quantile(visiblePoints.map(({ game }) => reviewCount(game)), 0.75) ?? 1)));
   const reviewsX = $derived(d3.scaleLinear().domain(reviewsZoom?.x ?? [0, 100]).range([0, plotWidth]));
   const playtimePriceX = $derived(d3.scaleLinear().domain(playtimeZoom?.x ?? [0, 100]).range([0, plotWidth]));
   const reviewsY = $derived(d3.scaleLinear().domain(reviewsZoom?.y ?? [0, reviewLimit]).range([plotHeight, 0]));
@@ -330,11 +330,11 @@
         <span aria-live="polite">At least {minimumReviews.toLocaleString()} reviews &middot; {rangePoints.length.toLocaleString()} matching games</span>
         <button onclick={() => setMinimumReviews(0)}>Reset threshold</button>
       </div>
-      <p>Move the slider to show games with at least this many total reviews across all three plots.</p>
+      <p>Move the slider to show games with at least this many total reviews across all three plots. The slider ends at the third quartile (75th percentile) of the sampled games' review counts.</p>
       <input id="minimum-reviews" class="threshold-slider" type="range" min="0" max={thresholdMax} step="1"
         value={minimumReviews} aria-valuetext={`At least ${minimumReviews.toLocaleString()} total reviews`}
         oninput={(event) => setMinimumReviews(event.currentTarget.valueAsNumber)} />
-      <div class="threshold-endpoints"><span>0</span><span>{thresholdMax.toLocaleString()} reviews</span></div>
+      <div class="threshold-endpoints"><span>0</span><span>{thresholdMax.toLocaleString()} reviews (Q3)</span></div>
     </div>
   {/if}
   <section class="analysis" aria-label="Scatterplot analysis">
