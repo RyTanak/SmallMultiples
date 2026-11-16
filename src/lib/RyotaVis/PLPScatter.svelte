@@ -7,7 +7,7 @@
   type SelectedPoint = { game: SteamGame; chart: 'reviews' | 'sentiment' | 'playtime' };
 
   let { games, width = 1240, height = 420 }: Props = $props();
-  let selectedReviews = $state<[number, number] | null>(null);
+  let minimumReviews = $state(0);
   let selectedPoint = $state<SelectedPoint | null>(null);
   let gameType = $state<GameType>('all');
 
@@ -80,8 +80,8 @@
     node.addEventListener('wheel', onWheel, { passive: false });
     return { destroy() { node.removeEventListener('wheel', onWheel); } };
   }
-  // Keep the overview domain independent of the zoomed scatterplot axes.
-  const brushMax = $derived(Math.max(1, Math.ceil(maxReviews)));
+  // Keep the threshold range independent of zoom and the active threshold.
+  const thresholdMax = $derived(Math.max(1, Math.ceil(maxReviews)));
   const reviewsX = $derived(d3.scaleLinear().domain(reviewsZoom?.x ?? [0, 100]).range([0, plotWidth]));
   const playtimePriceX = $derived(d3.scaleLinear().domain(playtimeZoom?.x ?? [0, 100]).range([0, plotWidth]));
   const reviewsY = $derived(d3.scaleLinear().domain(reviewsZoom?.y ?? [0, reviewLimit]).range([plotHeight, 0]));
@@ -97,57 +97,15 @@
   const sentimentTicks = $derived(sentimentY.ticks(5));
   const playtimeTicks = $derived(playtimeY.ticks(5));
 
-  const isInRange = (game: SteamGame) => selectedReviews === null ||
-    (reviewCount(game) >= selectedReviews[0] && reviewCount(game) <= selectedReviews[1]);
-  const brushWidth = $derived(Math.max(240, width - 48));
-  const brushScale = $derived(d3.scaleLinear().domain([0, brushMax]).range([0, brushWidth]));
-  const rangePoints = $derived(visiblePoints.filter(({ game }) => isInRange(game) && matchesGameType(game)));
-  let brushNode: SVGGElement | undefined;
-  let brushBehavior: d3.BrushBehavior<unknown> | undefined;
-
-  // The action runs in the browser; resizing or new data rebuilds the brush extent.
-  function reviewBrush(node: SVGGElement, settings: { width: number; max: number }) {
-    brushNode = node;
-    const setup = ({ width: barWidth, max }: typeof settings) => {
-      const scale = d3.scaleLinear().domain([0, max]).range([0, barWidth]);
-      const behavior = d3.brushX<unknown>()
-        .extent([[0, 0], [barWidth, 32]])
-        .on('brush end', (event: d3.D3BrushEvent<unknown>) => {
-          const selection = event.selection as [number, number] | null;
-          selectedReviews = selection ? [Math.round(scale.invert(selection[0])), Math.round(scale.invert(selection[1]))] : null;
-          selectedPoint = null;
-          reviewsZoom = null;
-          playtimeZoom = null;
-          sentimentZoom = null;
-        });
-      brushBehavior = behavior;
-      const range = selectedReviews
-        ? [Math.min(selectedReviews[0], max), Math.min(selectedReviews[1], max)]
-        : [0, max];
-      d3.select(node).call(behavior).call(behavior.move, range.map(scale) as [number, number]);
-    };
-    setup(settings);
-    return {
-      update: setup,
-      destroy() {
-        d3.select(node).on('.brush', null);
-        brushNode = undefined;
-        brushBehavior = undefined;
-      }
-    };
-  }
-
-  function moveReviewRange(low: number, high: number) {
-    const range: [number, number] = [Math.round(Math.max(0, Math.min(low, brushMax))), Math.round(Math.max(0, Math.min(high, brushMax)))];
-    range.sort((a, b) => a - b);
+  const meetsReviewThreshold = (game: SteamGame) => reviewCount(game) >= minimumReviews;
+  const rangePoints = $derived(visiblePoints.filter(({ game }) => meetsReviewThreshold(game) && matchesGameType(game)));
+  function setMinimumReviews(value: number) {
+    if (!Number.isFinite(value)) return;
+    minimumReviews = Math.round(Math.max(0, Math.min(value, thresholdMax)));
     reviewsZoom = null;
     playtimeZoom = null;
     sentimentZoom = null;
-    selectedReviews = range;
     selectedPoint = null;
-    if (brushNode && brushBehavior) {
-      d3.select(brushNode).call(brushBehavior.move, range.map(brushScale) as [number, number]);
-    }
   }
   const formatPlaytime = (minutes: number) => minutes >= 60 ? `${(minutes / 60).toFixed(1)}h` : `${minutes.toFixed(0)}m`;
   const formatReviews = d3.format('.2s');
@@ -224,7 +182,7 @@
     <p>No games with valid price, review-count, and playtime data are available.</p>
   {:else}
     {#if rangePoints.length === 0}
-      <p role="status">No games match the selected game type and review-count range.</p>
+      <p role="status">No games match the selected game type and minimum review count.</p>
     {/if}
     <div class="charts">
       <svg width={panelWidth} {height} role="img" aria-label="Scatterplot of price and review count, colored by indie status">
@@ -366,33 +324,17 @@
 
 
     </div>
-    <div class="review-brush">
-      <div class="brush-heading">
-        <strong>Brush review count</strong>
-        <span aria-live="polite">{(selectedReviews?.[0] ?? 0).toLocaleString()} &ndash; {(selectedReviews?.[1] ?? brushMax).toLocaleString()} reviews &middot; {rangePoints.length.toLocaleString()} visible games</span>
-        <button onclick={() => moveReviewRange(0, brushMax)}>Reset range</button>
+    <div class="review-threshold">
+      <div class="threshold-heading">
+        <label for="minimum-reviews">Minimum review count</label>
+        <span aria-live="polite">At least {minimumReviews.toLocaleString()} reviews &middot; {rangePoints.length.toLocaleString()} matching games</span>
+        <button onclick={() => setMinimumReviews(0)}>Reset threshold</button>
       </div>
-      <p>Drag across the bar to filter games by total review count in all three plots. Drag the selection to move it, or its edges to resize.</p>
-      <svg class="brush-svg" width="100%" viewBox={`0 0 ${brushWidth + 48} 76`} role="group" aria-label="Select a review-count range for all scatterplots">
-        <g transform="translate(24 8)">
-          <rect class="brush-track" width={brushWidth} height="32" rx="3" />
-          <g class="brush" use:reviewBrush={{ width: brushWidth, max: brushMax }}></g>
-          {#each brushScale.ticks(8) as tick}
-            <line class="axis" x1={brushScale(tick)} x2={brushScale(tick)} y1="36" y2="41" />
-            <text class="tick-label" x={brushScale(tick)} y="56" text-anchor="middle">{formatReviews(tick)}</text>
-          {/each}
-        </g>
-      </svg>
-      <div class="range-inputs">
-        <label>Minimum reviews
-          <input type="number" min="0" max={brushMax} step="1" value={selectedReviews?.[0] ?? 0}
-            onchange={(event) => { const value = event.currentTarget.valueAsNumber; if (Number.isFinite(value)) moveReviewRange(Math.min(value, selectedReviews?.[1] ?? brushMax), selectedReviews?.[1] ?? brushMax); }} />
-        </label>
-        <label>Maximum reviews
-          <input type="number" min="0" max={brushMax} step="1" value={selectedReviews?.[1] ?? brushMax}
-            onchange={(event) => { const value = event.currentTarget.valueAsNumber; if (Number.isFinite(value)) moveReviewRange(selectedReviews?.[0] ?? 0, Math.max(value, selectedReviews?.[0] ?? 0)); }} />
-        </label>
-      </div>
+      <p>Move the slider to show games with at least this many total reviews across all three plots.</p>
+      <input id="minimum-reviews" class="threshold-slider" type="range" min="0" max={thresholdMax} step="1"
+        value={minimumReviews} aria-valuetext={`At least ${minimumReviews.toLocaleString()} total reviews`}
+        oninput={(event) => setMinimumReviews(event.currentTarget.valueAsNumber)} />
+      <div class="threshold-endpoints"><span>0</span><span>{thresholdMax.toLocaleString()} reviews</span></div>
     </div>
   {/if}
   <section class="analysis" aria-label="Scatterplot analysis">
@@ -420,16 +362,14 @@
   .header { display: block; }
   h2 { margin: 0 0 0.25rem; }
   .legend span { display: inline-flex; align-items: center; gap: 0.3rem; color: #243247; font-size: 0.78rem; white-space: nowrap; }
-  .review-brush { margin-top: 24px; padding: 16px; border: 1px solid #cbd5e1; border-radius: 6px; }
-  .brush-heading, .range-inputs { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
-  .brush-heading span, .review-brush p { font-size: 0.8rem; color: #475569; }
-  .brush-heading button { margin-left: auto; padding: 5px 10px; border: 1px solid #94a3b8; border-radius: 4px; background: white; cursor: pointer; }
-  .brush-track { fill: #e2e8f0; }
-  .brush-svg { touch-action: none; }
-  .brush :global(.selection) { fill: #0284c7; fill-opacity: 0.25; stroke: #0369a1; }
-  .brush :global(.handle) { fill: #0369a1; }
-  .range-inputs label { display: flex; align-items: center; gap: 8px; font-size: 0.8rem; }
-  .range-inputs input { width: 100px; padding: 5px; border: 1px solid #94a3b8; border-radius: 4px; }
+  .review-threshold { margin-top: 24px; padding: 16px; border: 1px solid #cbd5e1; border-radius: 6px; }
+  .threshold-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+  .threshold-heading label { font-weight: 700; }
+  .threshold-heading span, .review-threshold p, .threshold-endpoints { font-size: 0.8rem; color: #475569; }
+  .threshold-heading button { margin-left: auto; padding: 5px 10px; border: 1px solid #94a3b8; border-radius: 4px; background: white; cursor: pointer; }
+  .threshold-slider { width: 100%; margin: 12px 0; accent-color: #0284c7; cursor: pointer; }
+  .threshold-slider:focus-visible { outline: 2px solid #0284c7; outline-offset: 4px; }
+  .threshold-endpoints { display: flex; justify-content: space-between; }
   .legend { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; margin: 0.75rem 0 0.25rem; }
   .swatch { width: 0.7rem; height: 0.7rem; border-radius: 50%; }
   .swatch.indie { background: #ea580c; }
