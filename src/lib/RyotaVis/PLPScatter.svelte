@@ -24,13 +24,23 @@
     selectedPoint = null;
   }
   const reviewCount = (game: SteamGame) => game.positive_reviews + game.negative_reviews;
-  const visiblePoints = $derived(
+  const eligiblePoints = $derived(
     games
       .filter((game) => Number.isFinite(game.price_no_sales) && game.price_no_sales >= 0 && game.price_no_sales <= 100 &&
         Number.isFinite(reviewCount(game)) && reviewCount(game) >= 1 &&
         Number.isFinite(game.avg_playtime_forever) && game.avg_playtime_forever > 0)
       .map((game) => ({ game }))
   );
+  // Sample each group independently and reuse the sample across plots and controls.
+  // A fixed random seed keeps the sample consistent across reloads and hydration.
+  const visiblePoints = $derived.by(() => {
+    const shuffle = d3.shuffler(d3.randomLcg(0.314159));
+    const sample = (indie: boolean) => {
+      const group = eligiblePoints.filter(({ game }) => isIndie(game) === indie);
+      return shuffle(group).slice(0, Math.round(group.length * 0.3));
+    };
+    return [...sample(true), ...sample(false)];
+  });
   const maxReviews = $derived(d3.max(visiblePoints, ({ game }) => reviewCount(game)) ?? 1);
   const maxPlaytime = $derived(d3.max(visiblePoints, ({ game }) => game.avg_playtime_forever) ?? 1);
   // Keep the overview domain independent of the zoomed scatterplot axes.
@@ -145,6 +155,7 @@
 
   <p class="selection-help">Click a point to compare that game across all plots. Click it again or clear the selection to deselect.</p>
   <p class="selection-help">Minimum: 1 review in the first plot.</p>
+  <p class="selection-help">All plots show a random 30% sample of eligible indie games and 30% of eligible non-indie games.</p>
   {#if selectedPoint}
     <div class="selection-info" role="status">
       <strong>{selectedPoint.game.name}</strong>
