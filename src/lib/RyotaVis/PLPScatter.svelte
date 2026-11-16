@@ -37,7 +37,7 @@
     const shuffle = d3.shuffler(d3.randomLcg(0.314159));
     const sample = (indie: boolean) => {
       const group = eligiblePoints.filter(({ game }) => isIndie(game) === indie);
-      return shuffle(group).slice(0, Math.round(group.length * 0.3));
+      return shuffle(group).slice(0, Math.round(group.length * 0.4));
     };
     return [...sample(true), ...sample(false)];
   });
@@ -155,7 +155,7 @@
 
   <p class="selection-help">Click a point to compare that game across all plots. Click it again or clear the selection to deselect.</p>
   <p class="selection-help">Minimum: 1 review in the first plot.</p>
-  <p class="selection-help">All plots show a random 30% sample of eligible indie games and 30% of eligible non-indie games.</p>
+  <p class="selection-help">All plots show a random 40% sample of eligible indie games and 40% of eligible non-indie games.</p>
   {#if selectedPoint}
     <div class="selection-info" role="status">
       <strong>{selectedPoint.game.name}</strong>
