@@ -234,10 +234,14 @@
               <text
                 class:active-pie-label={activeGenre === slice.data.genre}
                 class:inactive-pie-label={activeGenre !== null && activeGenre !== slice.data.genre}
+                style="font-size: 15px;"
                 x={label.textX}
                 y={label.lineEnd[1] + 3}
                 text-anchor={label.textAnchor}
-              >{slice.data.genre}</text>
+              >{slice.data.genre}
+              {#if activeGenre === slice.data.genre}
+    ({percentOf(slice.data.indieReviews, pieTotal(indieSlices))})
+  {/if}</text>
             {/each}
           </g>
         </svg>
@@ -269,10 +273,15 @@
               <text
                 class:active-pie-label={activeGenre === slice.data.genre}
                 class:inactive-pie-label={activeGenre !== null && activeGenre !== slice.data.genre}
+                style="font-size: 15px;"
                 x={label.textX}
                 y={label.lineEnd[1] + 3}
                 text-anchor={label.textAnchor}
-              >{slice.data.genre}</text>
+              >{slice.data.genre}
+  {#if activeGenre === slice.data.genre}
+    ({percentOf(slice.data.nonIndieReviews, nonIndiePieTotal(nonIndieSlices))})
+  {/if}
+</text>
             {/each}
           </g>
         </svg>
@@ -455,6 +464,7 @@
 
   text.active-pie-label {
     fill: #0f172a;
+    font-size: 8.5px;
     font-weight: 700;
   }
 

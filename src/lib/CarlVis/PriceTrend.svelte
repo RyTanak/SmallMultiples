@@ -138,13 +138,21 @@
     return points
       .map((point): DotPoint => ({
         ...point,
+        // overlap: points.some(
+        //   (other) =>
+        //     other !== point &&
+        //     other.category !== point.category &&
+        //     other.year === point.year &&
+        //     Math.abs(other.price - point.price) <= PRICE_MATCH_MARGIN + 1e-9
+        // )
         overlap: points.some(
-          (other) =>
-            other !== point &&
-            other.category !== point.category &&
-            other.year === point.year &&
-            Math.abs(other.price - point.price) <= PRICE_MATCH_MARGIN + 1e-9
-        )
+  (other) =>
+    other !== point &&
+    other.category !== point.category &&
+    other.rank === point.rank &&
+    other.year === point.year &&
+    Math.abs(other.price - point.price) <= PRICE_MATCH_MARGIN + 1e-9
+)
       }))
       .sort((a, b) => a.rank - b.rank);
   });
@@ -214,10 +222,10 @@
   </svg>
 
   <div class="legend">
-    <span class="legend-dot indie-dot rank-1"></span> Indie
-    <span class="legend-dot nonIndie-dot rank-1"></span> Non-indie
-    <span class="legend-dot overlap-dot rank-1"></span> Overlap
-    <span class="rank-key">Large = 1st · medium = 2nd · small = 3rd</span>
+  <span class="legend-dot indie-dot rank-1"></span> Indie
+  <span class="legend-dot nonIndie-dot rank-1"></span> Non-indie
+  <span class="legend-dot overlap-dot rank-1"></span> Overlap
+  <span class="rank-key">Outlined = overlapping · Large = 1st · medium = 2nd · small = 3rd</span>
   </div>
 
   <div class="selection" aria-live="polite">
@@ -255,6 +263,10 @@
   .indie-dot { fill: #f97316; }
   .nonIndie-dot { fill: #64748b; }
   .overlap-dot { fill: #8b5cf6; }
+  /* .overlap-dot {
+  stroke: #0f172a;
+  stroke-width: 2.5;
+  } */
   .dimmed-dot { opacity: 0.18; }
   .selected-dot { opacity: 1; stroke: #0f172a; stroke-width: 2.5; }
   .legend { color: #64748b; font-size: 0.78rem; text-align: center; }
@@ -262,6 +274,7 @@
   .legend-dot:first-child { margin-left: 0; }
   .legend-dot.indie-dot { background: #f97316; }
   .legend-dot.nonIndie-dot { background: #64748b; }
+  .legend-dot.overlap-dot { background: #8b5cf6;}
   .rank-key { margin-left: 0.8rem; }
   .selection { align-items: flex-start; background: #f8fafc; border-left: 3px solid #94a3b8; box-sizing: border-box; color: #475569; display: flex; flex-wrap: wrap; gap: 0.35rem 0.8rem; height: 9.5rem; line-height: 1.4; overflow: hidden; padding: 0.45rem 0.65rem; }
   .selection strong { color: #0f172a; }
