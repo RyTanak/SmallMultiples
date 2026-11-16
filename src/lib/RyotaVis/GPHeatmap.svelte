@@ -114,6 +114,12 @@
       </div>
     </div>
   {/if}
+  <section class="analysis" aria-label="Heatmap analysis">
+    <h3>Analysis</h3>
+    <p>Across all the genres, indie games shows a higher positive review percentage for all price ranges than non-indie games. For both indie and non-indies, games that are
+      $0.01~19.99 (below $20) have the highest positive reviews in all genres. For sales share, for indie games, games priced under $20 have a much higher share of ownership 
+    in all genres except sports and mmos. In non-indie games, the share is more distributed evenly across all price ranges, showing that indies depend on games between $0.01~$19.99 for their sales.</p>
+  </section>
    <!-- <p class="description">Indie status follows the Indie genre. Games can appear in multiple genre rows. Prices use the undiscounted USD price; $20 belongs to the highest range.</p> -->
 </section>
 
@@ -135,6 +141,9 @@
   .chart-scroll { overflow-x: auto; }
   .heatmaps { display: flex; align-items: flex-start; gap: 12px; width: max-content; }
   .heatmap-panel { flex: 0 0 auto; }
+  .analysis { width: 100%; margin: 24px 0 0; padding-top: 16px; border-top: 1px solid #e2e8f0; box-sizing: border-box; }
+  .analysis h3 { margin: 0 0 8px; text-align: left; }
+  .analysis p { margin: 0 0 12px; line-height: 1.7; color: #334155; }
   h3 { margin: 16px 0 0; text-align: center; font-size: 1rem; }
   svg { display: block; font-family: inherit; font-size: 12px; }
   .column-label { font-weight: 600; fill: #243247; }
