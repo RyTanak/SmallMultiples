@@ -4,7 +4,7 @@
 
   type Props = { games: SteamGame[]; width?: number; height?: number };
   type GameType = 'all' | 'indie' | 'non-indie';
-  type SelectedPoint = { game: SteamGame; chart: 'reviews' | 'sentiment' | 'playtime' };
+  type SelectedPoint = { game: SteamGame; chart: 'reviews' | 'sentiment' | 'playtime' | 'owners' };
 
   let { games, width = 1240, height = 420 }: Props = $props();
   let selectedPrices = $state<[number, number] | null>([0, 100]);
@@ -43,6 +43,20 @@
   });
   const maxReviews = $derived(d3.max(visiblePoints, ({ game }) => reviewCount(game)) ?? 1);
   const maxPlaytime = $derived(d3.max(visiblePoints, ({ game }) => game.avg_playtime_forever) ?? 1);
+  const estimatedOwners = (game: SteamGame): number | null => {
+    const value = game.estimated_owners.replaceAll(',', '').trim();
+    if (!value) return null;
+    const bounds = value.split('..').map((part) => part.trim() ? Number(part.trim()) : NaN);
+    if (bounds.length > 2 || bounds.some((bound) => !Number.isFinite(bound) || bound < 0)) return null;
+    if (bounds.length === 2 && bounds[0] > bounds[1]) return null;
+    return d3.mean(bounds) ?? null;
+  };
+  const ownerSample = $derived(visiblePoints.filter(({ game }) => (estimatedOwners(game) ?? 0) > 0));
+  const maxOwners = $derived(d3.max(ownerSample, ({ game }) => estimatedOwners(game)!) ?? 10);
+  const playtimeX = $derived(d3.scaleLog().domain([1, Math.max(10, maxPlaytime)]).nice().range([0, plotWidth]));
+  const ownersY = $derived(d3.scaleLog().domain([1, Math.max(10, maxOwners)]).nice().range([plotHeight, 0]));
+  const playtimeXTicks = $derived(playtimeX.ticks(5));
+  const ownersTicks = $derived(ownersY.ticks(5));
   // Keep the overview domain independent of the zoomed scatterplot axes.
   const brushMax = 100;
   const x = $derived(d3.scaleLinear().domain(selectedPrices ?? [0, brushMax]).range([0, plotWidth]));
@@ -114,6 +128,7 @@
     const game = selectedPoint.game;
     const position = chart === 'reviews' ? reviewsY(reviewCount(game))
       : chart === 'playtime' ? playtimeY(game.avg_playtime_forever)
+      : chart === 'owners' ? ownersY(estimatedOwners(game) ?? 1)
       : sentimentY(positiveReviewPercent(game));
     return Math.max(0, Math.min(plotHeight - 60, position - 52));
   };
@@ -130,6 +145,9 @@
   };
   // Draw the selected game last so nearby points cannot cover it.
   const orderedPoints = $derived([...rangePoints].sort((a, b) => Number(isSelected(a.game)) - Number(isSelected(b.game))));
+  const ownerPoints = $derived(orderedPoints.filter(({ game }) => (estimatedOwners(game) ?? 0) > 0));
+  const ownersTooltipX = $derived(selectedPoint
+    ? Math.min(Math.max(playtimeX(selectedPoint.game.avg_playtime_forever) + 10, 0), Math.max(0, plotWidth - tooltipWidth)) : 0);
   const sentimentTooltipX = $derived(selectedPoint
     ? Math.min(Math.max(reviewCountX(reviewCount(selectedPoint.game)) + 10, 0), Math.max(0, plotWidth - tooltipWidth)) : 0);
 </script>
@@ -156,6 +174,7 @@
   <p class="selection-help">Click a point to compare that game across all plots. Click it again or clear the selection to deselect.</p>
   <p class="selection-help">Minimum: 1 review in the first plot.</p>
   <p class="selection-help">All plots show a random 40% sample of eligible indie games and 40% of eligible non-indie games.</p>
+  <p class="selection-help">Estimated owners use the midpoint of each reported range; games with missing or zero estimates are omitted from the fourth plot.</p>
   {#if selectedPoint}
     <div class="selection-info" role="status">
       <strong>{selectedPoint.game.name}</strong>
@@ -303,6 +322,53 @@
         </g>
       </svg>
 
+      <svg width={panelWidth} {height} role="img" aria-label="Scatterplot of average playtime and estimated owners, colored by indie status">
+        <g transform={`translate(${margin.left} ${margin.top})`}>
+          <text class="chart-title" x={plotWidth / 2} y={-14} text-anchor="middle">Playtime vs. Estimated Owners</text>
+          {#each ownersTicks as tick}
+            <line class="grid-line" x1="0" x2={plotWidth} y1={ownersY(tick)} y2={ownersY(tick)} />
+            <text class="tick-label" x={-10} y={ownersY(tick)} text-anchor="end" dominant-baseline="middle">{formatReviews(tick)}</text>
+          {/each}
+          {#each playtimeXTicks as tick}
+            <line class="grid-line" y1="0" y2={plotHeight} x1={playtimeX(tick)} x2={playtimeX(tick)} />
+            <text class="tick-label" x={playtimeX(tick)} y={plotHeight + 18} text-anchor="middle">{formatPlaytime(tick)}</text>
+          {/each}
+          {#if ownerPoints.length === 0}
+            <text class="tick-label" x={plotWidth / 2} y={plotHeight / 2} text-anchor="middle">No games with positive estimated owners in this selection.</text>
+          {/if}
+          {#each ownerPoints as point}
+            <circle
+              cx={playtimeX(point.game.avg_playtime_forever)}
+              cy={ownersY(estimatedOwners(point.game)!)}
+              r={isSelected(point.game) ? 7 : 4}
+              fill={color(point.game)}
+              opacity={selectedPoint ? isSelected(point.game) ? 1 : 0.12 : 0.75}
+              stroke={isSelected(point.game) ? '#172033' : 'white'}
+              stroke-width={isSelected(point.game) ? 2 : 0.7}
+              role="button"
+              tabindex="0"
+              aria-label={`Select ${point.game.name}, ${priceLabel(point.game)}`}
+              aria-pressed={isSelected(point.game)}
+              onclick={() => selectPoint(point.game, 'owners')}
+              onkeydown={(event) => pointKeydown(event, point.game, 'owners')}
+            >
+            </circle>
+          {/each}
+          {#if selectedPoint && isInRange(selectedPoint.game) && (estimatedOwners(selectedPoint.game) ?? 0) > 0}
+            <g class="tooltip" transform={`translate(${ownersTooltipX} ${tooltipY('owners')})`}>
+              <rect width={tooltipWidth} height="60" rx="4" />
+              <text x="9" y="18">{selectedPoint.game.name}</text>
+              <text x="9" y="36">Playtime: {formatPlaytime(selectedPoint.game.avg_playtime_forever)}</text>
+              <text x="9" y="54">Owners: {formatReviews(estimatedOwners(selectedPoint.game)!)}</text>
+            </g>
+          {/if}
+          <line class="axis" x1="0" x2={plotWidth} y1={plotHeight} y2={plotHeight} />
+          <line class="axis" x1="0" x2="0" y1="0" y2={plotHeight} />
+          <text class="axis-label" x={plotWidth / 2} y={plotHeight + 44} text-anchor="middle">Average playtime (log scale)</text>
+          <text class="axis-label" transform={`translate(${-58} ${plotHeight / 2}) rotate(-90)`} text-anchor="middle">Estimated owners (log scale)</text>
+        </g>
+      </svg>
+
 
     </div>
     <div class="price-brush">
@@ -311,7 +377,7 @@
         <span aria-live="polite">${(selectedPrices?.[0] ?? 0).toFixed(2)} &ndash; ${(selectedPrices?.[1] ?? brushMax).toFixed(2)} &middot; {rangePoints.length.toLocaleString()} visible games</span>
         <button onclick={() => movePriceRange(0, brushMax)}>Reset range</button>
       </div>
-      <p>Drag across the bar to zoom the price axes and filter games in all three plots. Drag the selection to move it, or its edges to resize.</p>
+      <p>Drag across the bar to zoom the price axes and filter games in all four plots. Drag the selection to move it, or its edges to resize.</p>
       <svg class="brush-svg" width="100%" viewBox={`0 0 ${brushWidth + 48} 76`} role="group" aria-label="Select a continuous price range for all scatterplots">
         <g transform="translate(24 8)">
           <rect class="brush-track" width={brushWidth} height="32" rx="3" />
