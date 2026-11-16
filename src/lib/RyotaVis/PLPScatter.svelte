@@ -120,7 +120,6 @@
   };
   // Draw the selected game last so nearby points cannot cover it.
   const orderedPoints = $derived([...rangePoints].sort((a, b) => Number(isSelected(a.game)) - Number(isSelected(b.game))));
-  const playtimePoints = $derived(orderedPoints.filter(({ game }) => game.avg_playtime_forever >= 30));
   const sentimentTooltipX = $derived(selectedPoint
     ? Math.min(Math.max(reviewCountX(reviewCount(selectedPoint.game)) + 10, 0), Math.max(0, plotWidth - tooltipWidth)) : 0);
 </script>
@@ -145,7 +144,7 @@
   </div>
 
   <p class="selection-help">Click a point to compare that game across all plots. Click it again or clear the selection to deselect.</p>
-  <p class="selection-help">Minimums: 1 review in the first plot and 30 minutes of average playtime in the second.</p>
+  <p class="selection-help">Minimum: 1 review in the first plot.</p>
   {#if selectedPoint}
     <div class="selection-info" role="status">
       <strong>{selectedPoint.game.name}</strong>
@@ -216,7 +215,7 @@
             <line class="grid-line" y1="0" y2={plotHeight} x1={x(tick)} x2={x(tick)} />
             <text class="tick-label" x={x(tick)} y={plotHeight + 18} text-anchor="middle">${d3.format("~g")(tick)}</text>
           {/each}
-          {#each playtimePoints as point}
+          {#each orderedPoints as point}
             <circle
               cx={x(point.game.price_no_sales)}
               cy={playtimeY(point.game.avg_playtime_forever)}
@@ -234,7 +233,7 @@
             >
             </circle>
           {/each}
-          {#if selectedPoint && isInRange(selectedPoint.game) && selectedPoint.game.avg_playtime_forever >= 30}
+          {#if selectedPoint && isInRange(selectedPoint.game)}
             <g class="tooltip" transform={`translate(${tooltipX} ${tooltipY('playtime')})`}>
               <rect width={tooltipWidth} height="60" rx="4" />
               <text x="9" y="18">{selectedPoint.game.name}</text>
