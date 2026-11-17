@@ -10,6 +10,10 @@
   let minimumReviews = $state(0);
   let selectedPoint = $state<SelectedPoint | null>(null);
   let gameType = $state<GameType>('all');
+  let densityMode = $state(true);
+  let focusEnabled = $state(false);
+  let focusPercent = $state(95);
+  const chartId = $props.id();
 
   const gap = 44;
   const margin = { top: 36, right: 24, bottom: 58, left: 76 };
@@ -41,18 +45,35 @@
     };
     return [...sample(true), ...sample(false)];
   });
+  const positiveReviewPercent = (game: SteamGame) => game.positive_reviews / reviewCount(game) * 100;
   const maxReviews = $derived(d3.max(visiblePoints, ({ game }) => reviewCount(game)) ?? 1);
+  // Compute shared percentile caps before the threshold and game-type filters.
+  const focusQuantile = (value: (game: SteamGame) => number) =>
+    d3.quantile(visiblePoints.map(({ game }) => value(game)), focusPercent / 100) ?? 1;
+  const priceLimit = $derived(focusEnabled ? Math.max(0.01, focusQuantile((game) => game.price_no_sales)) : 100);
+  const reviewLimit = $derived(focusEnabled ? Math.max(1.01, focusQuantile(reviewCount)) : 100_000);
+  const playtimeLimit = $derived(focusEnabled ? Math.max(1, focusQuantile((game) => game.avg_playtime_forever)) : 166.7 * 60);
+  const sentimentLimit = $derived(focusEnabled ? Math.max(1, focusQuantile(positiveReviewPercent)) : 100);
   type PlotZoom = { x: [number, number]; y: [number, number] };
   let reviewsZoom = $state<PlotZoom | null>(null);
   let playtimeZoom = $state<PlotZoom | null>(null);
   let sentimentZoom = $state<PlotZoom | null>(null);
-  const reviewLimit = 100_000;
-  const playtimeLimit = 166.7 * 60;
+  function resetPlotZoom() {
+    reviewsZoom = null;
+    playtimeZoom = null;
+    sentimentZoom = null;
+    selectedPoint = null;
+  }
+  function setFocusPercent(value: number) {
+    if (!Number.isFinite(value)) return;
+    focusPercent = Math.max(1, Math.min(100, Math.round(value)));
+    resetPlotZoom();
+  }
   function wheelZoom(node: SVGGElement, chart: SelectedPoint['chart']) {
     const onWheel = (event: WheelEvent) => {
       const [px, py] = d3.pointer(event, node);
       if (px < 0 || px > plotWidth || py < 0 || py > plotHeight || event.deltaY === 0) return;
-      const bounds: [number, number] = chart === 'sentiment' ? sentimentBaseX.domain() as [number, number] : [0, 100];
+      const bounds: [number, number] = chart === 'sentiment' ? sentimentBaseX.domain() as [number, number] : [0, priceLimit];
       if (bounds[1] <= bounds[0]) return;
       event.preventDefault();
       const sx = chart === 'reviews' ? reviewsX : chart === 'playtime' ? playtimePriceX : reviewCountX;
@@ -70,7 +91,7 @@
         x: chart === 'sentiment'
           ? zoomDomain(sx.domain().map(Math.log), Math.log(sx.invert(px)), bounds.map(Math.log) as [number, number]).map(Math.exp) as [number, number]
           : zoomDomain(sx.domain(), sx.invert(px), bounds),
-        y: zoomDomain(sy.domain(), sy.invert(py), [0, chart === 'reviews' ? reviewLimit : chart === 'playtime' ? playtimeLimit : 100])
+        y: zoomDomain(sy.domain(), sy.invert(py), [0, chart === 'reviews' ? reviewLimit : chart === 'playtime' ? playtimeLimit : sentimentLimit])
       };
       if (chart === 'reviews') reviewsZoom = zoom;
       else if (chart === 'playtime') playtimeZoom = zoom;
@@ -82,13 +103,14 @@
   }
   // Keep the threshold range independent of zoom and the active threshold.
   const thresholdMax = $derived(Math.max(1, Math.round(d3.quantile(visiblePoints.map(({ game }) => reviewCount(game)), 0.75) ?? 1)));
-  const reviewsX = $derived(d3.scaleLinear().domain(reviewsZoom?.x ?? [0, 100]).range([0, plotWidth]));
-  const playtimePriceX = $derived(d3.scaleLinear().domain(playtimeZoom?.x ?? [0, 100]).range([0, plotWidth]));
+  const reviewsX = $derived(d3.scaleLinear().domain(reviewsZoom?.x ?? [0, priceLimit]).range([0, plotWidth]));
+  const playtimePriceX = $derived(d3.scaleLinear().domain(playtimeZoom?.x ?? [0, priceLimit]).range([0, plotWidth]));
   const reviewsY = $derived(d3.scaleLinear().domain(reviewsZoom?.y ?? [0, reviewLimit]).range([plotHeight, 0]));
-  const positiveReviewPercent = (game: SteamGame) => game.positive_reviews / reviewCount(game) * 100;
-  const sentimentBaseX = $derived(d3.scaleLog().domain([1, Math.max(10, maxReviews)]).nice());
+  const sentimentBaseX = $derived(focusEnabled
+    ? d3.scaleLog().domain([1, reviewLimit])
+    : d3.scaleLog().domain([1, Math.max(10, maxReviews)]).nice());
   const reviewCountX = $derived(d3.scaleLog().domain(sentimentZoom?.x ?? sentimentBaseX.domain()).range([0, plotWidth]));
-  const sentimentY = $derived(d3.scaleLinear().domain(sentimentZoom?.y ?? [0, 100]).range([plotHeight, 0]));
+  const sentimentY = $derived(d3.scaleLinear().domain(sentimentZoom?.y ?? [0, sentimentLimit]).range([plotHeight, 0]));
   const reviewCountTicks = $derived(reviewCountX.ticks(5));
   const playtimeY = $derived(d3.scaleLinear().domain(playtimeZoom?.y ?? [0, playtimeLimit]).range([plotHeight, 0]));
   const reviewPriceTicks = $derived(reviewsX.ticks(5));
@@ -134,7 +156,7 @@
   // Draw the selected game last so nearby points cannot cover it.
   const orderedPoints = $derived([...rangePoints].sort((a, b) => Number(isSelected(a.game)) - Number(isSelected(b.game))));
   const inPlot = (game: SteamGame, sx: d3.ScaleLinear<number, number>, sy: d3.ScaleLinear<number, number>, value: number) =>
-    sx(game.price_no_sales) >= 0 && sx(game.price_no_sales) <= plotWidth && sy(value) >= 0 && sy(value) <= plotHeight;
+    sx(game.price_no_sales) >= -1e-8 && sx(game.price_no_sales) <= plotWidth + 1e-8 && sy(value) >= -1e-8 && sy(value) <= plotHeight + 1e-8;
   const reviewPoints = $derived(orderedPoints.filter(({ game }) => reviewCount(game) <= reviewLimit && inPlot(game, reviewsX, reviewsY, reviewCount(game))));
   const playtimePoints = $derived(orderedPoints.filter(({ game }) => game.avg_playtime_forever <= playtimeLimit && inPlot(game, playtimePriceX, playtimeY, game.avg_playtime_forever)));
   const plotTooltipX = (chart: 'reviews' | 'playtime') => selectedPoint
@@ -144,7 +166,45 @@
     sentimentY(positiveReviewPercent(game)) >= -1e-8 && sentimentY(positiveReviewPercent(game)) <= plotHeight + 1e-8));
   const sentimentTooltipX = $derived(selectedPoint
     ? Math.min(Math.max(reviewCountX(reviewCount(selectedPoint.game)) + 10, 0), Math.max(0, plotWidth - tooltipWidth)) : 0);
+  type DensityPoint = { x: number; y: number; indie: boolean };
+  function densityLayers(points: DensityPoint[]) {
+    if (!densityMode || points.length === 0) return [];
+    const estimator = d3.contourDensity<DensityPoint>()
+      .x((point) => point.x).y((point) => point.y)
+      .size([Math.ceil(plotWidth), Math.ceil(plotHeight)]).cellSize(4).bandwidth(16).thresholds(6);
+    const groups = [true, false].map((indie) => ({ indie, points: points.filter((point) => point.indie === indie) }));
+    // Use common density levels for both groups within each panel.
+    const peak = d3.max(groups.flatMap((group) => estimator(group.points)), (contour) => contour.value) ?? 0;
+    if (peak <= 0) return [];
+    const levels = d3.ticks(0, peak, 6).filter((value) => value > 0);
+    const path = d3.geoPath();
+    return groups.map((group) => ({
+      indie: group.indie,
+      count: group.points.length,
+      contours: estimator.thresholds(levels)(group.points).map((contour) => ({
+        path: path(contour) ?? '', value: contour.value
+      }))
+    }));
+  }
+  const reviewDensity = $derived(densityLayers(reviewPoints.map(({ game }) => ({ x: reviewsX(game.price_no_sales), y: reviewsY(reviewCount(game)), indie: isIndie(game) }))));
+  const playtimeDensity = $derived(densityLayers(playtimePoints.map(({ game }) => ({ x: playtimePriceX(game.price_no_sales), y: playtimeY(game.avg_playtime_forever), indie: isIndie(game) }))));
+  const sentimentDensity = $derived(densityLayers(sentimentPoints.map(({ game }) => ({ x: reviewCountX(reviewCount(game)), y: sentimentY(positiveReviewPercent(game)), indie: isIndie(game) }))));
 </script>
+
+{#snippet densityPlot(layers: ReturnType<typeof densityLayers>, id: string)}
+  <defs><clipPath {id}><rect width={plotWidth} height={plotHeight} /></clipPath></defs>
+  <g class="density-layer" clip-path={`url(#${id})`}>
+    {#each layers as layer}
+      <g fill={layer.indie ? '#ea580c' : '#0284c7'} stroke={layer.indie ? '#c2410c' : '#0369a1'}>
+        {#each layer.contours as contour}
+          <path d={contour.path} fill-opacity="0.12" stroke-opacity="0.65" stroke-width="1">
+            <title>{layer.indie ? 'Indie' : 'Non-indie'} density ? {layer.count.toLocaleString()} games in view</title>
+          </path>
+        {/each}
+      </g>
+    {/each}
+  </g>
+{/snippet}
 
 <section class="price-comparisons">
   <div class="header">
@@ -165,11 +225,20 @@
     <span class="point-count">{rangePoints.length.toLocaleString()} of {visiblePoints.length.toLocaleString()} games</span>
   </div>
 
-  <p class="selection-help">Click a point to compare that game across all plots. Click it again or clear the selection to deselect.</p>
+  <p class="selection-help">{#if densityMode}Orange contours show indie density; blue contours show non-indie density. Darker nested regions contain more games per unit of plot area. Switch to points to select individual games.{:else}Click a point to compare that game across all plots. Click it again or clear the selection to deselect.{/if}</p>
   <p class="selection-help">Minimum: 1 review in the first plot.</p>
   <p class="selection-help">All plots show a random 40% sample of eligible indie games and 40% of eligible non-indie games.</p>
-  <p class="selection-help">The top plots use linear scales, excluding games above 100,000 reviews in the first and 166.7 hours of average playtime in the second. Scroll up over any plot to zoom in at the cursor, or scroll down to zoom out.</p>
-  <button onclick={() => { reviewsZoom = null; playtimeZoom = null; sentimentZoom = null; selectedPoint = null; }}>Reset all plots zoom</button>
+  <p class="selection-help">{#if focusEnabled}Focus caps each axis at the selected percentile ({focusPercent}%) of sampled games, trimming the upper tail. Games beyond either axis limit are hidden; indie and non-indie share the same limits.{:else}The top plots use linear scales, excluding games above 100,000 reviews in the first and 166.7 hours of average playtime in the second.{/if} Scroll up over any plot to zoom in at the cursor, or scroll down to zoom out.</p>
+  <div class="plot-controls">
+    <button onclick={resetPlotZoom}>Reset all plots zoom</button>
+    <button aria-pressed={densityMode} onclick={() => { densityMode = !densityMode; selectedPoint = null; }}>{densityMode ? 'Show points' : 'Show density'}</button>
+    <button aria-pressed={focusEnabled} onclick={() => { focusEnabled = !focusEnabled; resetPlotZoom(); }}>{focusEnabled ? 'Use fixed scales' : `Focus on central ${focusPercent}%`}</button>
+    <label class="focus-percent">Focus %
+      <input type="number" min="1" max="100" step="1" value={focusPercent}
+        onchange={(event) => setFocusPercent(event.currentTarget.valueAsNumber)} />
+    </label>
+    <span aria-live="polite">{densityMode ? 'Density view' : 'Points view'}</span>
+  </div>
   {#if selectedPoint}
     <div class="selection-info" role="status">
       <strong>{selectedPoint.game.name}</strong>
@@ -197,6 +266,9 @@
             <line class="grid-line" y1="0" y2={plotHeight} x1={reviewsX(tick)} x2={reviewsX(tick)} />
             <text class="tick-label" x={reviewsX(tick)} y={plotHeight + 18} text-anchor="middle">${d3.format("~g")(tick)}</text>
           {/each}
+          {#if densityMode}
+            {@render densityPlot(reviewDensity, `${chartId}-reviews-density`)}
+          {:else}
           {#each reviewPoints as point}
             <circle
               cx={reviewsX(point.game.price_no_sales)}
@@ -215,6 +287,7 @@
             >
             </circle>
           {/each}
+          {/if}
           {#if selectedPoint && reviewPoints.some(({ game }) => game.app_id === selectedPoint?.game.app_id)}
             <g class="tooltip" transform={`translate(${plotTooltipX('reviews')} ${tooltipY('reviews')})`}>
               <rect width={tooltipWidth} height="60" rx="4" />
@@ -242,6 +315,9 @@
             <line class="grid-line" y1="0" y2={plotHeight} x1={playtimePriceX(tick)} x2={playtimePriceX(tick)} />
             <text class="tick-label" x={playtimePriceX(tick)} y={plotHeight + 18} text-anchor="middle">${d3.format("~g")(tick)}</text>
           {/each}
+          {#if densityMode}
+            {@render densityPlot(playtimeDensity, `${chartId}-playtime-density`)}
+          {:else}
           {#each playtimePoints as point}
             <circle
               cx={playtimePriceX(point.game.price_no_sales)}
@@ -260,6 +336,7 @@
             >
             </circle>
           {/each}
+          {/if}
           {#if selectedPoint && playtimePoints.some(({ game }) => game.app_id === selectedPoint?.game.app_id)}
             <g class="tooltip" transform={`translate(${plotTooltipX('playtime')} ${tooltipY('playtime')})`}>
               <rect width={tooltipWidth} height="60" rx="4" />
@@ -287,6 +364,9 @@
             <line class="grid-line" y1="0" y2={plotHeight} x1={reviewCountX(tick)} x2={reviewCountX(tick)} />
             <text class="tick-label" x={reviewCountX(tick)} y={plotHeight + 18} text-anchor="middle">{formatReviews(tick)}</text>
           {/each}
+          {#if densityMode}
+            {@render densityPlot(sentimentDensity, `${chartId}-sentiment-density`)}
+          {:else}
           {#each sentimentPoints as point}
             <circle
               cx={reviewCountX(reviewCount(point.game))}
@@ -305,6 +385,7 @@
             >
             </circle>
           {/each}
+          {/if}
           {#if selectedPoint && sentimentPoints.some(({ game }) => game.app_id === selectedPoint?.game.app_id)}
             <g class="tooltip" transform={`translate(${sentimentTooltipX} ${tooltipY('sentiment')})`}>
               <rect width={tooltipWidth} height="60" rx="4" />
@@ -345,6 +426,13 @@
 </section>
 
 <style>
+  .focus-percent { display: inline-flex; align-items: center; gap: 6px; font-size: 0.8rem; color: #475569; }
+  .focus-percent input { width: 64px; padding: 5px; border: 1px solid #94a3b8; border-radius: 4px; font: inherit; }
+  .plot-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 12px 0; }
+  .plot-controls button { padding: 6px 12px; border: 1px solid #94a3b8; border-radius: 5px; background: white; color: #243247; font: inherit; cursor: pointer; }
+  .plot-controls button:focus-visible { outline: 3px solid #0284c7; outline-offset: 2px; }
+  .plot-controls span { font-size: 0.8rem; color: #475569; }
+
   .grid-line, .tick-label { pointer-events: none; }
   .analysis { width: 100%; margin: 24px 0 0; padding-top: 16px; border-top: 1px solid #e2e8f0; box-sizing: border-box; }
   .analysis h3 { margin: 0 0 8px; text-align: left; font-size: 1rem; }
