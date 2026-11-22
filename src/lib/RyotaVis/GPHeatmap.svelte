@@ -72,6 +72,7 @@
   const rowHeight = 32;
   const chartHeight = $derived(Math.max(height, top + genres.length * rowHeight + 12));
   const cellWidth = $derived((chartWidth - left - 12) / 3);
+  const cellCenterInset = $derived((left - 15) / chartWidth);
   const percent = (value: number) => `${(value * 100).toFixed(1)}%`;
   const differences = $derived(panels[0].rows.map((row, rowIndex) => ({
     genre: row.genre,
@@ -150,7 +151,7 @@
       </div>
       {/each}
       <div class="difference-panel" aria-hidden={!merged}>
-        <h3 style:padding-inline-start={`${(left - 15) / chartWidth * 100}%`}>Indie minus non-indie</h3>
+        <h3 style:padding-inline-start={`${cellCenterInset * 100}%`}>Indie minus non-indie</h3>
         <svg viewBox={`0 0 ${chartWidth} ${chartHeight}`} role="img" aria-label={`Genre price heatmap of differences in ${metric === 'reviews' ? 'positive review percentage' : 'ownership share'}`}>
           {#each priceRanges as label, index}
             <text x={left + (index + 0.5) * cellWidth} y={28} text-anchor="middle" class="column-label">{label}</text>
@@ -167,10 +168,10 @@
           {/each}
         </svg>
       </div>
+      <div class="merge-control" style:padding-inline-start={`calc(${cellCenterInset * 50}% - ${cellCenterInset * 6}px)`}>
+        <button type="button" aria-controls={`${id}-heatmaps`} onclick={toggleMerge}>{merged ? 'Split' : 'Merge'}</button>
       </div>
-    </div>
-    <div class="merge-control">
-      <button type="button" aria-controls={`${id}-heatmaps`} onclick={toggleMerge}>{merged ? 'Split' : 'Merge'}</button>
+      </div>
     </div>
   {/if}
   <section class="analysis" aria-label="Heatmap analysis">
@@ -202,7 +203,7 @@
   .merged .heatmap-panel.non-indie { transform: translateX(calc(-50% - 6px)); }
   .difference-panel { position: absolute; top: 0; left: 50%; width: calc(50% - 6px); transform: translateX(-50%); opacity: 0; visibility: hidden; }
   .merged .difference-panel { opacity: 1; visibility: visible; transition: opacity 120ms ease 384ms; }
-  .merge-control { display: flex; justify-content: center; margin-top: 8px; }
+  .merge-control { grid-column: 1 / -1; display: flex; justify-content: center; margin-top: 8px; }
   .merge-control button { padding: 6px 12px; border: 1px solid #94a3b8; border-radius: 5px; background: white; color: #243247; font: inherit; cursor: pointer; }
   @media (prefers-reduced-motion: reduce) {
     .heatmap-panel, .merged .difference-panel { transition: none; }
