@@ -10,7 +10,13 @@
   let minimumReviews = $state(0);
   let selectedPoint = $state<SelectedPoint | null>(null);
   let gameType = $state<GameType>('all');
-  let densityMode = $state(true);
+  type PlotMode = 'points' | 'hexbin';
+  const plotModes: { value: PlotMode; label: string }[] = [
+    { value: 'points', label: 'Points' },
+    { value: 'hexbin', label: 'Hexbin' }
+  ];
+  let plotMode = $state<PlotMode>('hexbin');
+  const hexbinMode = $derived(plotMode === 'hexbin');
   const chartId = $props.id();
 
   const gap = 44;
@@ -45,8 +51,8 @@
   const playtimeLimit = 166.7 * 60;
   const sentimentLimit = 100;
   type PlotZoom = { x: [number, number]; y: [number, number] };
-  const reviewDensityDomain: PlotZoom = { x: [2.3, 47.2], y: [5_200, 50_000] };
-  const playtimeDensityDomain: PlotZoom = { x: [12.45, 32.55], y: [325, 2_345] };
+  const reviewHexbinDomain: PlotZoom = { x: [2.3, 47.2], y: [5_200, 50_000] };
+  const playtimeHexbinDomain: PlotZoom = { x: [12.45, 32.55], y: [325, 2_345] };
   let reviewsZoom = $state<PlotZoom | null>(null);
   let playtimeZoom = $state<PlotZoom | null>(null);
   let sentimentZoom = $state<PlotZoom | null>(null);
@@ -62,10 +68,11 @@
     sentimentZoom = null;
     selectedPoint = null;
   }
-  function toggleDensityMode() {
-    densityMode = !densityMode;
+  function changePlotMode(mode: PlotMode) {
+    if (mode === plotMode) return;
     reviewsZoom = null;
     playtimeZoom = null;
+    plotMode = mode;
     selectedPoint = null;
   }
   function wheelZoom(node: SVGGElement, chart: SelectedPoint['chart']) {
@@ -102,14 +109,14 @@
   }
   // Keep the threshold range independent of zoom and the active threshold.
   const thresholdMax = $derived(Math.max(1, Math.round(d3.quantile(sampledPoints.map(({ game }) => reviewCount(game)), 0.75) ?? 1)));
-  const reviewsX = $derived(d3.scaleLinear().domain(reviewsZoom?.x ?? (densityMode ? reviewDensityDomain.x : [0, priceLimit])).range([0, plotWidth]));
-  const playtimePriceX = $derived(d3.scaleLinear().domain(playtimeZoom?.x ?? (densityMode ? playtimeDensityDomain.x : [0, priceLimit])).range([0, plotWidth]));
-  const reviewsY = $derived(d3.scaleLinear().domain(reviewsZoom?.y ?? (densityMode ? reviewDensityDomain.y : [0, reviewLimit])).range([plotHeight, 0]));
+  const reviewsX = $derived(d3.scaleLinear().domain(reviewsZoom?.x ?? (hexbinMode ? reviewHexbinDomain.x : [0, priceLimit])).range([0, plotWidth]));
+  const playtimePriceX = $derived(d3.scaleLinear().domain(playtimeZoom?.x ?? (hexbinMode ? playtimeHexbinDomain.x : [0, priceLimit])).range([0, plotWidth]));
+  const reviewsY = $derived(d3.scaleLinear().domain(reviewsZoom?.y ?? (hexbinMode ? reviewHexbinDomain.y : [0, reviewLimit])).range([plotHeight, 0]));
   const sentimentBaseX = $derived(d3.scaleLog().domain([1, Math.max(10, maxReviews)]).nice());
   const reviewCountX = $derived(d3.scaleLog().domain(sentimentZoom?.x ?? sentimentBaseX.domain()).range([0, plotWidth]));
   const sentimentY = $derived(d3.scaleLinear().domain(sentimentZoom?.y ?? [0, sentimentLimit]).range([plotHeight, 0]));
   const reviewCountTicks = $derived(reviewCountX.ticks(5));
-  const playtimeY = $derived(d3.scaleLinear().domain(playtimeZoom?.y ?? (densityMode ? playtimeDensityDomain.y : [0, playtimeLimit])).range([plotHeight, 0]));
+  const playtimeY = $derived(d3.scaleLinear().domain(playtimeZoom?.y ?? (hexbinMode ? playtimeHexbinDomain.y : [0, playtimeLimit])).range([plotHeight, 0]));
   const reviewPriceTicks = $derived(reviewsX.ticks(5));
   const playtimePriceTicks = $derived(playtimePriceX.ticks(5));
   const reviewTicks = $derived(reviewsY.ticks(5));
@@ -163,66 +170,163 @@
     sentimentY(positiveReviewPercent(game)) >= -1e-8 && sentimentY(positiveReviewPercent(game)) <= plotHeight + 1e-8));
   const sentimentTooltipX = $derived(selectedPoint
     ? Math.min(Math.max(reviewCountX(reviewCount(selectedPoint.game)) + 10, 0), Math.max(0, plotWidth - tooltipWidth)) : 0);
-  type DensityPoint = { x: number; y: number; indie: boolean };
-  function densityLayers(points: DensityPoint[], horizontalScale = 1, minimumPeakFraction = 0.25) {
-    if (!densityMode || points.length === 0) return [];
-    const estimator = d3.contourDensity<DensityPoint>()
-      .x((point) => point.x * horizontalScale).y((point) => point.y)
-      .size([Math.ceil(plotWidth * horizontalScale), Math.ceil(plotHeight)]).cellSize(4).bandwidth(16);
-    const groups = [true, false].flatMap((indie) => {
-      const group = points.filter((point) => point.indie === indie);
-      return group.length ? [{ indie, count: group.length, contour: estimator.contours(group) }] : [];
+  type ProjectedPoint = { x: number; y: number; yValue: number; indie: boolean };
+  const sentimentPositions = $derived(sentimentPoints.map(({ game }) => ({
+    x: reviewCountX(reviewCount(game)), y: sentimentY(positiveReviewPercent(game)), yValue: positiveReviewPercent(game), indie: isIndie(game)
+  })));
+
+  const hexRadius = 10;
+  const hexStepX = Math.sqrt(3) * hexRadius;
+  const hexStepY = 1.5 * hexRadius;
+  const hexagon = Array.from({ length: 6 }, (_, index) => {
+    const angle = (index * 60 - 90) * Math.PI / 180;
+    return `${hexRadius * Math.cos(angle)},${hexRadius * Math.sin(angle)}`;
+  }).join(' ');
+
+  type Hexbin = { x: number; y: number; indie: number; nonIndie: number; indieSum: number; nonIndieSum: number };
+  function hexbin(points: ProjectedPoint[]) {
+    const bins = new Map<string, Hexbin>();
+    for (const { x, y, yValue, indie } of points) {
+      // Round fractional axial coordinates to the nearest hex center.
+      const q = x / hexStepX - y / (2 * hexStepY);
+      const r = y / hexStepY;
+      const third = -q - r;
+      let column = Math.round(q);
+      let row = Math.round(r);
+      const other = Math.round(third);
+      const columnError = Math.abs(column - q);
+      const rowError = Math.abs(row - r);
+      const otherError = Math.abs(other - third);
+      if (columnError > rowError && columnError > otherError) column = -row - other;
+      else if (rowError > otherError) row = -column - other;
+
+      const key = `${column},${row}`;
+      let bin = bins.get(key);
+      if (!bin) {
+        bin = { x: hexStepX * (column + row / 2), y: hexStepY * row, indie: 0, nonIndie: 0, indieSum: 0, nonIndieSum: 0 };
+        bins.set(key, bin);
+      }
+      if (indie) {
+        bin.indie += 1;
+        bin.indieSum += yValue;
+      } else {
+        bin.nonIndie += 1;
+        bin.nonIndieSum += yValue;
+      }
+    }
+    return [...bins.values()];
+  }
+  const reviewHexbins = $derived(hexbinMode ? hexbin(reviewPoints.map(({ game }) => ({
+    x: reviewsX(game.price_no_sales), y: reviewsY(reviewCount(game)), yValue: reviewCount(game), indie: isIndie(game)
+  }))) : []);
+  const playtimeHexbins = $derived(hexbinMode ? hexbin(playtimePoints.map(({ game }) => ({
+    x: playtimePriceX(game.price_no_sales), y: playtimeY(game.avg_playtime_forever), yValue: game.avg_playtime_forever, indie: isIndie(game)
+  }))) : []);
+  const sentimentHexbins = $derived(hexbinMode ? hexbin(sentimentPositions) : []);
+  let mergedRows = $state({ reviews: false, playtime: false, sentiment: false });
+  type Chart = keyof typeof mergedRows;
+  let hoveredBin = $state.raw<{ chart: Chart; indie: boolean; bin: Hexbin } | null>(null);
+  const formatBinAverage: Record<Chart, (value: number) => string> = {
+    reviews: (value) => `${value.toLocaleString(undefined, { maximumFractionDigits: 1 })} reviews`,
+    playtime: (value) => `${(value / 60).toFixed(1)} hours`,
+    sentiment: (value) => `${value.toFixed(1)}%`
+  };
+  function binSummary(chart: Chart, bin: Hexbin, indie: boolean) {
+    const count = indie ? bin.indie : bin.nonIndie;
+    const average = (indie ? bin.indieSum : bin.nonIndieSum) / count;
+    return `${indie ? 'Indie' : 'Non-indie'}: ${count.toLocaleString()} ${count === 1 ? 'game' : 'games'}, avg. ${formatBinAverage[chart](average)}`;
+  }
+  const hexHalfWidth = hexStepX / 2;
+  const leftHexHalf = `0,${-hexRadius} 0,${hexRadius} ${-hexHalfWidth},${hexRadius / 2} ${-hexHalfWidth},${-hexRadius / 2}`;
+  const rightHexHalf = `0,${-hexRadius} ${hexHalfWidth},${-hexRadius / 2} ${hexHalfWidth},${hexRadius / 2} 0,${hexRadius}`;
+  const maxBinCount = (bins: Hexbin[]) => d3.max(bins, (bin) => Math.max(bin.indie, bin.nonIndie)) ?? 0;
+  const reviewBinMax = $derived(maxBinCount(reviewHexbins));
+  const playtimeBinMax = $derived(maxBinCount(playtimeHexbins));
+  const sentimentBinMax = $derived(maxBinCount(sentimentHexbins));
+  const binOpacity = (count: number, maxCount: number) => 0.25 + 0.75 * Math.sqrt(count / maxCount);
+  function densitySpectrum(color: string, maxCount: number) {
+    const stops = Array.from({ length: 9 }, (_, index) => {
+      const count = 1 + (maxCount - 1) * index / 8;
+      return d3.rgb(color).copy({ opacity: binOpacity(count, maxCount) }).formatRgb();
     });
-    const peak = d3.max(groups, (group) => group.contour.max) ?? 0;
-    // Use a single-game peak as the reference for the minimum contour level.
-    const singleGamePeak = estimator.contours([{ x: plotWidth / 2, y: plotHeight / 2, indie: false }]).max;
-    const outerLevel = singleGamePeak * minimumPeakFraction;
-    const levels = [outerLevel, ...d3.ticks(0, peak, 6).filter((value) => value > outerLevel)];
-    const path = d3.geoPath(d3.geoTransform({
-      point(x, y) { this.stream.point(x / horizontalScale, y); }
-    }));
-    return groups.map((group) => ({
-      indie: group.indie,
-      count: group.count,
-      contours: levels.filter((level) => level <= group.contour.max).map(group.contour).map((contour) => ({
-        path: path(contour) ?? '', value: contour.value
-      }))
-    }));
+    return `linear-gradient(to right, ${stops.join(', ')})`;
   }
-  function priceDensityBands(
-    points: { game: SteamGame }[],
-    priceScale: d3.ScaleLinear<number, number>,
-    yPosition: (game: SteamGame) => number
-  ) {
-    if (!densityMode) return [];
-    const bandSize = 20;
-    const bands = d3.group(points, ({ game }) =>
-      Math.min(Math.floor(game.price_no_sales / bandSize) * bandSize, priceLimit - bandSize));
-    return Array.from(bands, ([start, gamesInBand]) => ({
-      start,
-      layers: densityLayers(gamesInBand.map(({ game }) => ({
-        x: priceScale(game.price_no_sales), y: yPosition(game), indie: isIndie(game)
-      })), 1.5, 1.5)
-    })).sort((a, b) => a.start - b.start);
-  }
-  const reviewDensity = $derived(priceDensityBands(reviewPoints, reviewsX, (game) => reviewsY(reviewCount(game))));
-  const playtimeDensity = $derived(priceDensityBands(playtimePoints, playtimePriceX, (game) => playtimeY(game.avg_playtime_forever)));
-  const sentimentDensity = $derived(densityLayers(sentimentPoints.map(({ game }) => ({ x: reviewCountX(reviewCount(game)), y: sentimentY(positiveReviewPercent(game)), indie: isIndie(game) }))));
+  const gameGroups = [
+    { indie: true, label: 'Indie', id: 'indie', color: '#ea580c' },
+    { indie: false, label: 'Non-indie', id: 'non-indie', color: '#0284c7' }
+  ];
 </script>
 
-{#snippet densityPlot(layers: ReturnType<typeof densityLayers>, id: string)}
+{#snippet hexbinPlot(bins: Hexbin[], id: string, group: (typeof gameGroups)[number], chart: Chart, maxCount: number)}
+  {@const merged = mergedRows[chart]}
   <defs><clipPath {id}><rect width={plotWidth} height={plotHeight} /></clipPath></defs>
-  <g class="density-layer" clip-path={`url(#${id})`}>
-    {#each layers as layer}
-      <g fill={layer.indie ? '#ea580c' : '#0284c7'} stroke={layer.indie ? '#c2410c' : '#0369a1'}>
-        {#each layer.contours as contour}
-          <path d={contour.path} fill-opacity="0.12" stroke-opacity="0.65" stroke-width="1">
-            <title>{layer.indie ? 'Indie' : 'Non-indie'} density ? {layer.count.toLocaleString()} games in view</title>
-          </path>
-        {/each}
-      </g>
+  <g clip-path={`url(#${id})`}>
+    {#each bins.filter((bin) => group.indie ? bin.indie > 0 : bin.nonIndie > 0) as bin}
+      {@const count = group.indie ? bin.indie : bin.nonIndie}
+      <polygon
+        points={merged && bin.indie && bin.nonIndie ? (group.indie ? leftHexHalf : rightHexHalf) : hexagon}
+        transform={`translate(${bin.x} ${bin.y})`}
+        fill={group.color}
+        fill-opacity={binOpacity(count, maxCount)}
+        stroke="#fff"
+        stroke-width="0.75"
+        role="img"
+        aria-label={binSummary(chart, bin, group.indie)}
+        onpointerenter={() => hoveredBin = { chart, indie: group.indie, bin }}
+        onpointerleave={() => {
+          if (hoveredBin?.bin === bin && hoveredBin.indie === group.indie) hoveredBin = null;
+        }}
+      />
     {/each}
   </g>
+  {#if hoveredBin?.chart === chart && bins.includes(hoveredBin.bin) && (merged ? !group.indie : group.indie === hoveredBin.indie)}
+    {@const bin = hoveredBin.bin}
+    {@const shared = merged && bin.indie > 0 && bin.nonIndie > 0}
+    {@const width = 230}
+    {@const height = shared ? 60 : 42}
+    {@const x = Math.max(0, Math.min(bin.x + hexRadius + 4, plotWidth - width))}
+    {@const y = Math.max(0, Math.min(bin.y - height - 4, plotHeight - height))}
+    <g class="tooltip" transform={`translate(${x} ${y})`}>
+      <rect {width} {height} rx="4" />
+      <text x="9" y="17">Games in cell</text>
+      <text x="9" y="34">{binSummary(chart, bin, shared || hoveredBin.indie)}</text>
+      {#if shared}<text x="9" y="51">{binSummary(chart, bin, false)}</text>{/if}
+    </g>
+  {/if}
+{/snippet}
+
+{#snippet mergeControls(chart: keyof typeof mergedRows, maxCount: number)}
+  <div class="row-controls">
+    {#if hexbinMode && maxCount > 0}
+      <div class="density-legend" role="group" aria-label="Density legend, games per hexagon">
+        <span>Games per hexagon</span>
+        <div class="legend-spectrum">
+          {#each gameGroups as group (group.id)}
+            <span class="legend-ramp" style:background={densitySpectrum(group.color, maxCount)} aria-hidden="true"></span>
+          {/each}
+          <div class="legend-range">
+            <span>1</span>
+            {#if maxCount > 1}<span>{maxCount.toLocaleString()}</span>{/if}
+          </div>
+        </div>
+      </div>
+      {#if mergedRows[chart]}
+        <div class="shared-hex-key">
+          <svg viewBox="-11 -11 22 22" aria-hidden="true">
+            <polygon points={leftHexHalf} fill={gameGroups[0].color} />
+            <polygon points={rightHexHalf} fill={gameGroups[1].color} />
+          </svg>
+          <span><strong>Shared hexagon</strong><br />Indie left, non-indie right</span>
+        </div>
+      {/if}
+    {/if}
+    <button type="button" onclick={() => {
+      hoveredBin = null;
+      mergedRows[chart] = !mergedRows[chart];
+    }}>
+      {mergedRows[chart] ? 'Split' : 'Merge'}
+    </button>
+  </div>
 {/snippet}
 
 <section class="price-comparisons">
@@ -244,14 +348,15 @@
     <span class="point-count">{rangePoints.length.toLocaleString()} of {sampledPoints.length.toLocaleString()} games</span>
   </div>
 
-  <p class="selection-help">{#if densityMode}Orange contours show indie density; blue contours show non-indie density. The price plots draw contours separately for each $20 band. Darker nested regions show higher density within each band or plot. Switch to points to select individual games.{:else}Click a point to compare that game across all plots. Click it again or clear the selection to deselect.{/if}</p>
-  <p class="selection-help">All three plots use the same sample of 40% of eligible indie games and 40% of eligible non-indie games.{#if densityMode} Choose Show full range to use the same axis limits as Points view.{/if}</p>
-  <p class="selection-help">Scroll up over any plot to zoom in at the cursor, or scroll down to zoom out.</p>
+  <p class="selection-help">{#if hexbinMode}Each hexagon groups nearby games. Darker hexagons contain more games. Each row uses a shared count scale. Hover over a hexagon for counts and averages.{:else}Click a point to compare that game across all plots. Click it again or clear the selection to deselect.{/if}</p>
+  <p class="selection-help">All three plots use the same sample of 40% of eligible indie games and 40% of eligible non-indie games.{#if hexbinMode} Choose Show full range to use the same axis limits as Points view.{/if}</p>
+  <p class="selection-help">Scroll over either panel to zoom both panels in that row.</p>
   <div class="plot-controls">
-    {#if densityMode}<button onclick={showFullRange}>Show full range</button>{/if}
+    {#if hexbinMode}<button onclick={showFullRange}>Show full range</button>{/if}
     <button onclick={resetPlotZoom}>Reset all plots zoom</button>
-    <button aria-pressed={densityMode} onclick={toggleDensityMode}>{densityMode ? 'Show points' : 'Show density'}</button>
-    <span aria-live="polite">{densityMode ? 'Density view' : 'Points view'}</span>
+    {#each plotModes as mode (mode.value)}
+      <button aria-pressed={plotMode === mode.value} onclick={() => changePlotMode(mode.value)}>{mode.label}</button>
+    {/each}
   </div>
   {#if selectedPoint}
     <div class="selection-info" role="status">
@@ -268,160 +373,191 @@
       <p role="status">No games match the selected game type and minimum review count.</p>
     {/if}
     <div class="charts">
-      <svg width={panelWidth} {height} role="img" aria-label="Scatterplot of price and review count, colored by indie status">
-        <g use:wheelZoom={'reviews'} transform={`translate(${margin.left} ${margin.top})`}>
-          <text class="chart-title" x={plotWidth / 2} y={-14} text-anchor="middle">Price vs. Review Count</text>
-          <rect width={plotWidth} height={plotHeight} fill="transparent" />
-          {#each reviewTicks as tick}
-            <line class="grid-line" x1="0" x2={plotWidth} y1={reviewsY(tick)} y2={reviewsY(tick)} />
-            <text class="tick-label" x={-10} y={reviewsY(tick)} text-anchor="end" dominant-baseline="middle">{formatReviews(tick)}</text>
+      <section class="chart-row" aria-labelledby={`${chartId}-reviews-heading`}>
+        <h3 id={`${chartId}-reviews-heading`}>Price vs. Review Count</h3>
+        <div class="chart-pair" class:merged={mergedRows.reviews}>
+          {#each gameGroups as group (group.id)}
+            {@const panelPoints = reviewPoints.filter(({ game }) => isIndie(game) === group.indie)}
+            <svg class:non-indie={!group.indie} viewBox={`0 0 ${panelWidth} ${height}`} role="img" aria-label={`Price vs. Review Count, ${group.label}`}>
+              <g use:wheelZoom={'reviews'} transform={`translate(${margin.left} ${margin.top})`}>
+                <text class="chart-title panel-heading" x={plotWidth / 2} y={-14} text-anchor="middle" fill={group.color}>{group.label}</text>
+                <rect class="zoom-target" width={plotWidth} height={plotHeight} fill="transparent" />
+                <g class="panel-axes">
+                  {#each reviewTicks as tick}
+                    <line class="grid-line" x1="0" x2={plotWidth} y1={reviewsY(tick)} y2={reviewsY(tick)} />
+                    <text class="tick-label" x={-10} y={reviewsY(tick)} text-anchor="end" dominant-baseline="middle">{formatReviews(tick)}</text>
+                  {/each}
+                  {#each reviewPriceTicks as tick}
+                    <line class="grid-line" y1="0" y2={plotHeight} x1={reviewsX(tick)} x2={reviewsX(tick)} />
+                    <text class="tick-label" x={reviewsX(tick)} y={plotHeight + 18} text-anchor="middle">${d3.format("~g")(tick)}</text>
+                  {/each}
+                </g>
+                {#if hexbinMode}
+                  {@render hexbinPlot(reviewHexbins, `${chartId}-reviews-${group.id}-hexbin`, group, 'reviews', reviewBinMax)}
+                {:else}
+                  {#each panelPoints as point}
+                    <circle
+                      cx={reviewsX(point.game.price_no_sales)}
+                      cy={reviewsY(reviewCount(point.game))}
+                      r={isSelected(point.game) ? 7 : 4}
+                      fill={color(point.game)}
+                      opacity={selectedPoint ? isSelected(point.game) ? 1 : 0.12 : 0.75}
+                      stroke={isSelected(point.game) ? '#172033' : 'white'}
+                      stroke-width={isSelected(point.game) ? 2 : 0.7}
+                      role="button"
+                      tabindex="0"
+                      aria-label={`Select ${point.game.name}, ${priceLabel(point.game)}`}
+                      aria-pressed={isSelected(point.game)}
+                      onclick={() => selectPoint(point.game, 'reviews')}
+                      onkeydown={(event) => pointKeydown(event, point.game, 'reviews')}
+                    >
+                    </circle>
+                  {/each}
+                {/if}
+                {#if selectedPoint && panelPoints.some(({ game }) => game.app_id === selectedPoint?.game.app_id)}
+                  <g class="tooltip" transform={`translate(${plotTooltipX('reviews')} ${tooltipY('reviews')})`}>
+                    <rect width={tooltipWidth} height="60" rx="4" />
+                    <text x="9" y="18">{selectedPoint.game.name}</text>
+                    <text x="9" y="36">Price: {priceLabel(selectedPoint.game)}</text>
+                    <text x="9" y="54">Reviews: {reviewCount(selectedPoint.game).toLocaleString()}</text>
+                  </g>
+                {/if}
+                <g class="panel-axes">
+                  <line class="axis" x1="0" x2={plotWidth} y1={plotHeight} y2={plotHeight} />
+                  <line class="axis" x1="0" x2="0" y1="0" y2={plotHeight} />
+                  <text class="axis-label" x={plotWidth / 2} y={plotHeight + 44} text-anchor="middle">Price (USD)</text>
+                  <text class="axis-label" transform={`translate(${-58} ${plotHeight / 2}) rotate(-90)`} text-anchor="middle">Review count</text>
+                </g>
+              </g>
+            </svg>
           {/each}
-          {#each reviewPriceTicks as tick}
-            <line class="grid-line" y1="0" y2={plotHeight} x1={reviewsX(tick)} x2={reviewsX(tick)} />
-            <text class="tick-label" x={reviewsX(tick)} y={plotHeight + 18} text-anchor="middle">${d3.format("~g")(tick)}</text>
-          {/each}
-          {#if densityMode}
-            {#each reviewDensity as band (band.start)}
-              {@render densityPlot(band.layers, `${chartId}-reviews-density-${band.start}`)}
-            {/each}
-          {:else}
-          {#each reviewPoints as point}
-            <circle
-              cx={reviewsX(point.game.price_no_sales)}
-              cy={reviewsY(reviewCount(point.game))}
-              r={isSelected(point.game) ? 7 : 4}
-              fill={color(point.game)}
-              opacity={selectedPoint ? isSelected(point.game) ? 1 : 0.12 : 0.75}
-              stroke={isSelected(point.game) ? '#172033' : 'white'}
-              stroke-width={isSelected(point.game) ? 2 : 0.7}
-              role="button"
-              tabindex="0"
-              aria-label={`Select ${point.game.name}, ${priceLabel(point.game)}`}
-              aria-pressed={isSelected(point.game)}
-              onclick={() => selectPoint(point.game, 'reviews')}
-              onkeydown={(event) => pointKeydown(event, point.game, 'reviews')}
-            >
-            </circle>
-          {/each}
-          {/if}
-          {#if selectedPoint && reviewPoints.some(({ game }) => game.app_id === selectedPoint?.game.app_id)}
-            <g class="tooltip" transform={`translate(${plotTooltipX('reviews')} ${tooltipY('reviews')})`}>
-              <rect width={tooltipWidth} height="60" rx="4" />
-              <text x="9" y="18">{selectedPoint.game.name}</text>
-              <text x="9" y="36">Price: {priceLabel(selectedPoint.game)}</text>
-              <text x="9" y="54">Reviews: {reviewCount(selectedPoint.game).toLocaleString()}</text>
-            </g>
-          {/if}
-          <line class="axis" x1="0" x2={plotWidth} y1={plotHeight} y2={plotHeight} />
-          <line class="axis" x1="0" x2="0" y1="0" y2={plotHeight} />
-          <text class="axis-label" x={plotWidth / 2} y={plotHeight + 44} text-anchor="middle">Price (USD)</text>
-          <text class="axis-label" transform={`translate(${-58} ${plotHeight / 2}) rotate(-90)`} text-anchor="middle">Review count</text>
-        </g>
-      </svg>
+        </div>
+        {@render mergeControls('reviews', reviewBinMax)}
+      </section>
 
-      <svg width={panelWidth} {height} role="img" aria-label="Scatterplot of price and playtime, colored by indie status">
-        <g use:wheelZoom={'playtime'} transform={`translate(${margin.left} ${margin.top})`}>
-          <text class="chart-title" x={plotWidth / 2} y={-14} text-anchor="middle">Price vs. Playtime</text>
-          <rect width={plotWidth} height={plotHeight} fill="transparent" />
-          {#each playtimeTicks as tick}
-            <line class="grid-line" x1="0" x2={plotWidth} y1={playtimeY(tick)} y2={playtimeY(tick)} />
-            <text class="tick-label" x={-10} y={playtimeY(tick)} text-anchor="end" dominant-baseline="middle">{d3.format('~g')(tick / 60)}</text>
+      <section class="chart-row" aria-labelledby={`${chartId}-playtime-heading`}>
+        <h3 id={`${chartId}-playtime-heading`}>Price vs. Playtime</h3>
+        <div class="chart-pair" class:merged={mergedRows.playtime}>
+          {#each gameGroups as group (group.id)}
+            {@const panelPoints = playtimePoints.filter(({ game }) => isIndie(game) === group.indie)}
+            <svg class:non-indie={!group.indie} viewBox={`0 0 ${panelWidth} ${height}`} role="img" aria-label={`Price vs. Playtime, ${group.label}`}>
+              <g use:wheelZoom={'playtime'} transform={`translate(${margin.left} ${margin.top})`}>
+                <text class="chart-title panel-heading" x={plotWidth / 2} y={-14} text-anchor="middle" fill={group.color}>{group.label}</text>
+                <rect class="zoom-target" width={plotWidth} height={plotHeight} fill="transparent" />
+                <g class="panel-axes">
+                  {#each playtimeTicks as tick}
+                    <line class="grid-line" x1="0" x2={plotWidth} y1={playtimeY(tick)} y2={playtimeY(tick)} />
+                    <text class="tick-label" x={-10} y={playtimeY(tick)} text-anchor="end" dominant-baseline="middle">{d3.format('~g')(tick / 60)}</text>
+                  {/each}
+                  {#each playtimePriceTicks as tick}
+                    <line class="grid-line" y1="0" y2={plotHeight} x1={playtimePriceX(tick)} x2={playtimePriceX(tick)} />
+                    <text class="tick-label" x={playtimePriceX(tick)} y={plotHeight + 18} text-anchor="middle">${d3.format("~g")(tick)}</text>
+                  {/each}
+                </g>
+                {#if hexbinMode}
+                  {@render hexbinPlot(playtimeHexbins, `${chartId}-playtime-${group.id}-hexbin`, group, 'playtime', playtimeBinMax)}
+                {:else}
+                  {#each panelPoints as point}
+                    <circle
+                      cx={playtimePriceX(point.game.price_no_sales)}
+                      cy={playtimeY(point.game.avg_playtime_forever)}
+                      r={isSelected(point.game) ? 7 : 4}
+                      fill={color(point.game)}
+                      opacity={selectedPoint ? isSelected(point.game) ? 1 : 0.12 : 0.75}
+                      stroke={isSelected(point.game) ? '#172033' : 'white'}
+                      stroke-width={isSelected(point.game) ? 2 : 0.7}
+                      role="button"
+                      tabindex="0"
+                      aria-label={`Select ${point.game.name}, ${priceLabel(point.game)}`}
+                      aria-pressed={isSelected(point.game)}
+                      onclick={() => selectPoint(point.game, 'playtime')}
+                      onkeydown={(event) => pointKeydown(event, point.game, 'playtime')}
+                    >
+                    </circle>
+                  {/each}
+                {/if}
+                {#if selectedPoint && panelPoints.some(({ game }) => game.app_id === selectedPoint?.game.app_id)}
+                  <g class="tooltip" transform={`translate(${plotTooltipX('playtime')} ${tooltipY('playtime')})`}>
+                    <rect width={tooltipWidth} height="60" rx="4" />
+                    <text x="9" y="18">{selectedPoint.game.name}</text>
+                    <text x="9" y="36">Price: {priceLabel(selectedPoint.game)}</text>
+                    <text x="9" y="54">Playtime: {formatPlaytime(selectedPoint.game.avg_playtime_forever)}</text>
+                  </g>
+                {/if}
+                <g class="panel-axes">
+                  <line class="axis" x1="0" x2={plotWidth} y1={plotHeight} y2={plotHeight} />
+                  <line class="axis" x1="0" x2="0" y1="0" y2={plotHeight} />
+                  <text class="axis-label" x={plotWidth / 2} y={plotHeight + 44} text-anchor="middle">Price (USD)</text>
+                  <text class="axis-label" transform={`translate(${-58} ${plotHeight / 2}) rotate(-90)`} text-anchor="middle">Average playtime (hours)</text>
+                </g>
+              </g>
+            </svg>
           {/each}
-          {#each playtimePriceTicks as tick}
-            <line class="grid-line" y1="0" y2={plotHeight} x1={playtimePriceX(tick)} x2={playtimePriceX(tick)} />
-            <text class="tick-label" x={playtimePriceX(tick)} y={plotHeight + 18} text-anchor="middle">${d3.format("~g")(tick)}</text>
-          {/each}
-          {#if densityMode}
-            {#each playtimeDensity as band (band.start)}
-              {@render densityPlot(band.layers, `${chartId}-playtime-density-${band.start}`)}
-            {/each}
-          {:else}
-          {#each playtimePoints as point}
-            <circle
-              cx={playtimePriceX(point.game.price_no_sales)}
-              cy={playtimeY(point.game.avg_playtime_forever)}
-              r={isSelected(point.game) ? 7 : 4}
-              fill={color(point.game)}
-              opacity={selectedPoint ? isSelected(point.game) ? 1 : 0.12 : 0.75}
-              stroke={isSelected(point.game) ? '#172033' : 'white'}
-              stroke-width={isSelected(point.game) ? 2 : 0.7}
-              role="button"
-              tabindex="0"
-              aria-label={`Select ${point.game.name}, ${priceLabel(point.game)}`}
-              aria-pressed={isSelected(point.game)}
-              onclick={() => selectPoint(point.game, 'playtime')}
-              onkeydown={(event) => pointKeydown(event, point.game, 'playtime')}
-            >
-            </circle>
-          {/each}
-          {/if}
-          {#if selectedPoint && playtimePoints.some(({ game }) => game.app_id === selectedPoint?.game.app_id)}
-            <g class="tooltip" transform={`translate(${plotTooltipX('playtime')} ${tooltipY('playtime')})`}>
-              <rect width={tooltipWidth} height="60" rx="4" />
-              <text x="9" y="18">{selectedPoint.game.name}</text>
-              <text x="9" y="36">Price: {priceLabel(selectedPoint.game)}</text>
-              <text x="9" y="54">Playtime: {formatPlaytime(selectedPoint.game.avg_playtime_forever)}</text>
-            </g>
-          {/if}
-          <line class="axis" x1="0" x2={plotWidth} y1={plotHeight} y2={plotHeight} />
-          <line class="axis" x1="0" x2="0" y1="0" y2={plotHeight} />
-          <text class="axis-label" x={plotWidth / 2} y={plotHeight + 44} text-anchor="middle">Price (USD)</text>
-          <text class="axis-label" transform={`translate(${-58} ${plotHeight / 2}) rotate(-90)`} text-anchor="middle">Average playtime (hours)</text>
-        </g>
-      </svg>
+        </div>
+        {@render mergeControls('playtime', playtimeBinMax)}
+      </section>
 
-      <svg width={panelWidth} {height} role="img" aria-label="Scatterplot of review count and positive review percentage, colored by indie status">
-        <g use:wheelZoom={'sentiment'} transform={`translate(${margin.left} ${margin.top})`}>
-          <rect width={plotWidth} height={plotHeight} fill="transparent" />
-          <text class="chart-title" x={plotWidth / 2} y={-14} text-anchor="middle">Review Count vs. Positive Reviews</text>
-          {#each sentimentTicks as tick}
-            <line class="grid-line" x1="0" x2={plotWidth} y1={sentimentY(tick)} y2={sentimentY(tick)} />
-            <text class="tick-label" x={-10} y={sentimentY(tick)} text-anchor="end" dominant-baseline="middle">{tick}%</text>
+      <section class="chart-row" aria-labelledby={`${chartId}-sentiment-heading`}>
+        <h3 id={`${chartId}-sentiment-heading`}>Review Count vs. Positive Reviews</h3>
+        <div class="chart-pair" class:merged={mergedRows.sentiment}>
+          {#each gameGroups as group (group.id)}
+            {@const panelPoints = sentimentPoints.filter(({ game }) => isIndie(game) === group.indie)}
+            <svg class:non-indie={!group.indie} viewBox={`0 0 ${panelWidth} ${height}`} role="img" aria-label={`Review Count vs. Positive Reviews, ${group.label}`}>
+              <g use:wheelZoom={'sentiment'} transform={`translate(${margin.left} ${margin.top})`}>
+                <rect class="zoom-target" width={plotWidth} height={plotHeight} fill="transparent" />
+                <text class="chart-title panel-heading" x={plotWidth / 2} y={-14} text-anchor="middle" fill={group.color}>{group.label}</text>
+                <g class="panel-axes">
+                  {#each sentimentTicks as tick}
+                    <line class="grid-line" x1="0" x2={plotWidth} y1={sentimentY(tick)} y2={sentimentY(tick)} />
+                    <text class="tick-label" x={-10} y={sentimentY(tick)} text-anchor="end" dominant-baseline="middle">{tick}%</text>
+                  {/each}
+                  {#each reviewCountTicks as tick}
+                    <line class="grid-line" y1="0" y2={plotHeight} x1={reviewCountX(tick)} x2={reviewCountX(tick)} />
+                    <text class="tick-label" x={reviewCountX(tick)} y={plotHeight + 18} text-anchor="middle">{formatReviews(tick)}</text>
+                  {/each}
+                </g>
+                {#if hexbinMode}
+                  {@render hexbinPlot(sentimentHexbins, `${chartId}-sentiment-${group.id}-hexbin`, group, 'sentiment', sentimentBinMax)}
+                {:else}
+                  {#each panelPoints as point}
+                    <circle
+                      cx={reviewCountX(reviewCount(point.game))}
+                      cy={sentimentY(positiveReviewPercent(point.game))}
+                      r={isSelected(point.game) ? 7 : 4}
+                      fill={color(point.game)}
+                      opacity={selectedPoint ? isSelected(point.game) ? 1 : 0.12 : 0.75}
+                      stroke={isSelected(point.game) ? '#172033' : 'white'}
+                      stroke-width={isSelected(point.game) ? 2 : 0.7}
+                      role="button"
+                      tabindex="0"
+                      aria-label={`Select ${point.game.name}, ${priceLabel(point.game)}`}
+                      aria-pressed={isSelected(point.game)}
+                      onclick={() => selectPoint(point.game, 'sentiment')}
+                      onkeydown={(event) => pointKeydown(event, point.game, 'sentiment')}
+                    >
+                    </circle>
+                  {/each}
+                {/if}
+                {#if selectedPoint && panelPoints.some(({ game }) => game.app_id === selectedPoint?.game.app_id)}
+                  <g class="tooltip" transform={`translate(${sentimentTooltipX} ${tooltipY('sentiment')})`}>
+                    <rect width={tooltipWidth} height="60" rx="4" />
+                    <text x="9" y="18">{selectedPoint.game.name}</text>
+                    <text x="9" y="36">Reviews: {reviewCount(selectedPoint.game).toLocaleString()}</text>
+                    <text x="9" y="54">Positive: {positiveReviewPercent(selectedPoint.game).toFixed(1)}%</text>
+                  </g>
+                {/if}
+                <g class="panel-axes">
+                  <line class="axis" x1="0" x2={plotWidth} y1={plotHeight} y2={plotHeight} />
+                  <line class="axis" x1="0" x2="0" y1="0" y2={plotHeight} />
+                  <text class="axis-label" x={plotWidth / 2} y={plotHeight + 44} text-anchor="middle">Review count (log scale)</text>
+                  <text class="axis-label" transform={`translate(${-58} ${plotHeight / 2}) rotate(-90)`} text-anchor="middle">Positive reviews (%)</text>
+                </g>
+              </g>
+            </svg>
           {/each}
-          {#each reviewCountTicks as tick}
-            <line class="grid-line" y1="0" y2={plotHeight} x1={reviewCountX(tick)} x2={reviewCountX(tick)} />
-            <text class="tick-label" x={reviewCountX(tick)} y={plotHeight + 18} text-anchor="middle">{formatReviews(tick)}</text>
-          {/each}
-          {#if densityMode}
-            {@render densityPlot(sentimentDensity, `${chartId}-sentiment-density`)}
-          {:else}
-          {#each sentimentPoints as point}
-            <circle
-              cx={reviewCountX(reviewCount(point.game))}
-              cy={sentimentY(positiveReviewPercent(point.game))}
-              r={isSelected(point.game) ? 7 : 4}
-              fill={color(point.game)}
-              opacity={selectedPoint ? isSelected(point.game) ? 1 : 0.12 : 0.75}
-              stroke={isSelected(point.game) ? '#172033' : 'white'}
-              stroke-width={isSelected(point.game) ? 2 : 0.7}
-              role="button"
-              tabindex="0"
-              aria-label={`Select ${point.game.name}, ${priceLabel(point.game)}`}
-              aria-pressed={isSelected(point.game)}
-              onclick={() => selectPoint(point.game, 'sentiment')}
-              onkeydown={(event) => pointKeydown(event, point.game, 'sentiment')}
-            >
-            </circle>
-          {/each}
-          {/if}
-          {#if selectedPoint && sentimentPoints.some(({ game }) => game.app_id === selectedPoint?.game.app_id)}
-            <g class="tooltip" transform={`translate(${sentimentTooltipX} ${tooltipY('sentiment')})`}>
-              <rect width={tooltipWidth} height="60" rx="4" />
-              <text x="9" y="18">{selectedPoint.game.name}</text>
-              <text x="9" y="36">Reviews: {reviewCount(selectedPoint.game).toLocaleString()}</text>
-              <text x="9" y="54">Positive: {positiveReviewPercent(selectedPoint.game).toFixed(1)}%</text>
-            </g>
-          {/if}
-          <line class="axis" x1="0" x2={plotWidth} y1={plotHeight} y2={plotHeight} />
-          <line class="axis" x1="0" x2="0" y1="0" y2={plotHeight} />
-          <text class="axis-label" x={plotWidth / 2} y={plotHeight + 44} text-anchor="middle">Review count (log scale)</text>
-          <text class="axis-label" transform={`translate(${-58} ${plotHeight / 2}) rotate(-90)`} text-anchor="middle">Positive reviews (%)</text>
-        </g>
-      </svg>
-
-
-
-
+        </div>
+        {@render mergeControls('sentiment', sentimentBinMax)}
+      </section>
     </div>
     <div class="review-threshold">
       <div class="threshold-heading">
@@ -447,7 +583,6 @@
   .plot-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 12px 0; }
   .plot-controls button { padding: 6px 12px; border: 1px solid #94a3b8; border-radius: 5px; background: white; color: #243247; font: inherit; cursor: pointer; }
   .plot-controls button:focus-visible { outline: 3px solid #0284c7; outline-offset: 2px; }
-  .plot-controls span { font-size: 0.8rem; color: #475569; }
 
   .grid-line, .tick-label { pointer-events: none; }
   .analysis { width: 100%; margin: 24px 0 0; padding-top: 16px; border-top: 1px solid #e2e8f0; box-sizing: border-box; }
@@ -479,9 +614,32 @@
   .swatch.indie { background: #ea580c; }
   .swatch.non-indie { background: #0284c7; }
   .point-count { margin-left: auto; color: #64748b !important; }
-  .charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 44px; align-items: start; }
-  svg { display: block; max-width: 100%; overflow: visible; font-family: inherit; }
-  .chart-title { fill: #243247; font-size: 12px; font-weight: 700; }
+  .charts { display: grid; gap: 24px; }
+  .chart-row { min-width: 0; }
+  .chart-row h3 { margin: 12px 0 0; color: #243247; font-size: 1rem; text-align: center; }
+  .chart-pair { display: grid; grid-template-columns: repeat(2, minmax(280px, 1fr)); column-gap: 12px; overflow-x: auto; }
+  svg { display: block; width: 100%; height: auto; font-family: inherit; }
+  .chart-pair > svg { transform-box: border-box; transition: transform 504ms ease; }
+  .chart-pair.merged > svg { transform: translateX(calc(50% + 6px)); }
+  .chart-pair.merged > svg.non-indie { transform: translateX(calc(-50% - 6px)); }
+  .panel-axes, .panel-heading { pointer-events: none; }
+  .panel-axes, .panel-heading { transition: opacity 308ms ease; }
+  .merged .panel-heading, .merged .non-indie .panel-axes { opacity: 0; }
+  .chart-pair.merged > svg.non-indie { pointer-events: none; }
+  .merged .non-indie polygon, .merged .non-indie circle { pointer-events: auto; }
+  .merged .non-indie .zoom-target { pointer-events: none; }
+  .row-controls { display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 12px; }
+  .row-controls button { padding: 6px 12px; border: 1px solid #94a3b8; border-radius: 5px; background: white; color: #243247; font: inherit; cursor: pointer; }
+  .density-legend { display: flex; align-items: center; gap: 12px; color: #475569; font-size: 0.8rem; }
+  .shared-hex-key { display: flex; align-items: center; gap: 6px; color: #475569; font-size: 0.75rem; }
+  .shared-hex-key svg { width: 22px; height: 22px; flex: none; }
+  .legend-spectrum { display: grid; gap: 2px; width: 132px; }
+  .legend-ramp { height: 7px; border-radius: 2px; }
+  .legend-range { display: flex; justify-content: space-between; }
+  @media (prefers-reduced-motion: reduce) {
+    .chart-pair > svg, .panel-axes, .panel-heading { transition: none; }
+  }
+  .chart-title { font-size: 12px; font-weight: 700; }
   .grid-line { stroke: #e2e8f0; stroke-width: 1; }
   .axis { stroke: #64748b; stroke-width: 1; }
   .tick-label { fill: #64748b; font-size: 10px; }
@@ -491,7 +649,6 @@
   .tooltip text { fill: white; font-size: 11px; }
   .tooltip text:first-of-type { font-weight: 700; }
   @media (max-width: 900px) {
-    .charts { grid-template-columns: 1fr; }
     .point-count { margin-left: 0; }
   }
 </style>

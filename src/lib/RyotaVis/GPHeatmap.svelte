@@ -1,10 +1,22 @@
 ﻿<script lang="ts">
-  import { interpolateBlues } from 'd3';
+  import { interpolateBlues, interpolateRdBu } from 'd3';
   import type { SteamGame } from '../../types';
 
   type Props = { games: SteamGame[]; width?: number; height?: number };
   let { games, width = 620, height = 420 }: Props = $props();
   let metric = $state<'reviews' | 'sales'>('reviews');
+  let merged = $state(false);
+  let chartScroll = $state<HTMLDivElement>();
+  function toggleMerge() {
+    merged = !merged;
+    if (merged && chartScroll) {
+      chartScroll.scrollTo({
+        left: (chartScroll.scrollWidth - chartScroll.clientWidth) / 2,
+        behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth'
+      });
+    }
+  }
+  const id = $props.id();
   const priceRanges = ['Free', 'Below $20', '$20 and above'];
   const priceBucket = (game: SteamGame) => game.is_free || game.price_no_sales === 0 ? 0 : game.price_no_sales < 20 ? 1 : 2;
   const isIndie = (game: SteamGame) => game.genres.some((genre) => genre.toLowerCase() === 'indie');
@@ -61,6 +73,23 @@
   const chartHeight = $derived(Math.max(height, top + genres.length * rowHeight + 12));
   const cellWidth = $derived((chartWidth - left - 12) / 3);
   const percent = (value: number) => `${(value * 100).toFixed(1)}%`;
+  const differences = $derived(panels[0].rows.map((row, rowIndex) => ({
+    genre: row.genre,
+    cells: row.cells.map((cell, columnIndex) => {
+      const nonIndie = panels[1].rows[rowIndex].cells[columnIndex].value;
+      const indie = cell.value;
+      return { label: cell.label, indie, nonIndie, delta: indie === null || nonIndie === null ? null : indie - nonIndie };
+    })
+  })));
+  const differenceLimit = $derived(Math.max(
+    0.01,
+    ...differences.flatMap((row) => row.cells.map((cell) => Math.abs(cell.delta ?? 0)))
+  ));
+  const differenceColor = (delta: number) => interpolateRdBu(0.5 + delta / (2 * differenceLimit));
+  const percentagePoints = (delta: number) => {
+    const rounded = Number((delta * 100).toFixed(1));
+    return `${rounded > 0 ? '+' : ''}${rounded.toFixed(1)} pp`;
+  };
 </script>
 
 <section class="genre-price">
@@ -82,18 +111,27 @@
     {:else}Share of estimated owners across price ranges within each genre. Owner-range midpoints are a proxy for sales, including free-game ownership.{/if}
   </p> -->
   <br/>
+  {#if merged}
+    <div class="legend" aria-label="Percentage-point difference, indie minus non-indie">
+      <span>Indie minus non-indie</span>
+      <span>{percentagePoints(-differenceLimit)}</span>
+      <span class="gradient" style:background={`linear-gradient(to right, ${differenceColor(-differenceLimit)}, ${differenceColor(0)}, ${differenceColor(differenceLimit)})`}></span>
+      <span>{percentagePoints(differenceLimit)}</span><span class="missing"></span><span>No data</span>
+    </div>
+  {:else}
   <div class="legend" aria-label={`Color scale from ${percent(colorDomain[0])} to ${percent(colorDomain[1])}`}>
     <span>{percent(colorDomain[0])}</span><span class="gradient"></span><span>{percent(colorDomain[1])}</span><span class="missing"></span><span>No data</span>
   </div>
+  {/if}
   {#if games.length === 0}
     <p>No game data available.</p>
   {:else}
-    <div class="chart-scroll">
-      <div class="heatmaps">
-      {#each panels as panel}
-      <div class="heatmap-panel">
+    <div class="chart-scroll" bind:this={chartScroll}>
+      <div class="heatmaps" class:merged id={`${id}-heatmaps`}>
+      {#each panels as panel, panelIndex}
+      <div class="heatmap-panel" class:non-indie={panelIndex === 1} aria-hidden={merged}>
       <h3>{panel.label}</h3>
-      <svg width={chartWidth} height={chartHeight} role="img" aria-label={`${panel.label} genre price heatmap: ${metric === 'reviews' ? 'positive review percentage' : 'estimated ownership share'}`}>
+      <svg viewBox={`0 0 ${chartWidth} ${chartHeight}`} role="img" aria-label={`${panel.label} genre price heatmap: ${metric === 'reviews' ? 'positive review percentage' : 'estimated ownership share'}`}>
         <title>Genres by price range</title>
         {#each priceRanges as label, index}
           <text x={left + (index + 0.5) * cellWidth} y={28} text-anchor="middle" class="column-label">{label}</text>
@@ -111,7 +149,28 @@
       </svg>
       </div>
       {/each}
+      <div class="difference-panel" aria-hidden={!merged}>
+        <h3 style:padding-inline-start={`${(left - 15) / chartWidth * 100}%`}>Indie minus non-indie</h3>
+        <svg viewBox={`0 0 ${chartWidth} ${chartHeight}`} role="img" aria-label={`Genre price heatmap of differences in ${metric === 'reviews' ? 'positive review percentage' : 'ownership share'}`}>
+          {#each priceRanges as label, index}
+            <text x={left + (index + 0.5) * cellWidth} y={28} text-anchor="middle" class="column-label">{label}</text>
+          {/each}
+          {#each differences as row, rowIndex}
+            <text x={left - 10} y={top + rowIndex * rowHeight + rowHeight / 2} dominant-baseline="middle" text-anchor="end" class="row-label">{row.genre}</text>
+            {#each row.cells as cell, columnIndex}
+              <g>
+                <title>{`${row.genre}, ${cell.label}. Indie: ${cell.indie === null ? 'No data' : percent(cell.indie)}. Non-indie: ${cell.nonIndie === null ? 'No data' : percent(cell.nonIndie)}. Difference: ${cell.delta === null ? 'No data' : percentagePoints(cell.delta)}.`}</title>
+                <rect x={left + columnIndex * cellWidth} y={top + rowIndex * rowHeight} width={cellWidth - 3} height={rowHeight - 3} rx="3" fill={cell.delta === null ? '#e5e7eb' : differenceColor(cell.delta)} />
+                <text x={left + (columnIndex + 0.5) * cellWidth - 1.5} y={top + rowIndex * rowHeight + (rowHeight - 3) / 2} dominant-baseline="middle" text-anchor="middle" fill={cell.delta !== null && Math.abs(cell.delta) / differenceLimit > 0.65 ? 'white' : '#172033'}>{cell.delta === null ? '?' : percentagePoints(cell.delta)}</text>
+              </g>
+            {/each}
+          {/each}
+        </svg>
       </div>
+      </div>
+    </div>
+    <div class="merge-control">
+      <button type="button" aria-controls={`${id}-heatmaps`} onclick={toggleMerge}>{merged ? 'Split' : 'Merge'}</button>
     </div>
   {/if}
   <section class="analysis" aria-label="Heatmap analysis">
@@ -129,23 +188,30 @@
   h2 { margin: 0 0 1rem; }
   .control-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.75rem; width: 100%; max-width: 100%; }
   .metric-control { display: flex; flex-direction: row; align-items: center; gap: 16px; margin: 0; padding: 0; border: 0; }
-  .metric-control legend { padding: 0; margin-bottom: 8px; color: #707174; font-size: 13px; }
   .metric-control label { display: flex; align-items: center; gap: 10px; font-size: 14px; cursor: pointer; }
   .metric-control input { appearance: none; width: 20px; height: 20px; margin: 0; border: 1px solid #ddd; border-radius: 50%; background: white; flex-shrink: 0; cursor: pointer; }
   .metric-control input:checked { border: 7px solid #202124; }
   .metric-control input:focus-visible { outline: 2px solid #202124; outline-offset: 3px; }
-  .description, .count { font-size: 0.8rem; line-height: 1.5; color: #475569; }
   .legend { display: flex; align-items: center; gap: 0.5rem; font-size: 0.75rem; }
   .gradient { width: 120px; height: 12px; background: linear-gradient(to right, #f7fbff, #6baed6, #08306b); }
   .missing { width: 12px; height: 12px; margin-left: 0.5rem; background: #e5e7eb; }
   .chart-scroll { overflow-x: auto; }
-  .heatmaps { display: flex; align-items: flex-start; gap: 12px; width: max-content; }
-  .heatmap-panel { flex: 0 0 auto; }
+  .heatmaps { position: relative; display: grid; grid-template-columns: repeat(2, minmax(360px, 1fr)); gap: 12px; min-width: 732px; }
+  .heatmap-panel { transition: transform 504ms ease, opacity 120ms ease; }
+  .merged .heatmap-panel { transform: translateX(calc(50% + 6px)); opacity: 0; transition-delay: 0ms, 384ms; pointer-events: none; }
+  .merged .heatmap-panel.non-indie { transform: translateX(calc(-50% - 6px)); }
+  .difference-panel { position: absolute; top: 0; left: 50%; width: calc(50% - 6px); transform: translateX(-50%); opacity: 0; visibility: hidden; }
+  .merged .difference-panel { opacity: 1; visibility: visible; transition: opacity 120ms ease 384ms; }
+  .merge-control { display: flex; justify-content: center; margin-top: 8px; }
+  .merge-control button { padding: 6px 12px; border: 1px solid #94a3b8; border-radius: 5px; background: white; color: #243247; font: inherit; cursor: pointer; }
+  @media (prefers-reduced-motion: reduce) {
+    .heatmap-panel, .merged .difference-panel { transition: none; }
+  }
   .analysis { width: 100%; margin: 24px 0 0; padding-top: 16px; border-top: 1px solid #e2e8f0; box-sizing: border-box; }
   .analysis h3 { margin: 0 0 8px; text-align: left; }
   .analysis p { margin: 0 0 12px; line-height: 1.7; color: #334155; }
   h3 { margin: 16px 0 0; text-align: center; font-size: 1rem; }
-  svg { display: block; font-family: inherit; font-size: 12px; }
+  svg { display: block; width: 100%; height: auto; font-family: inherit; font-size: 12px; }
   .column-label { font-weight: 600; fill: #243247; }
   .row-label { fill: #243247; }
   @media (max-width: 560px) {
