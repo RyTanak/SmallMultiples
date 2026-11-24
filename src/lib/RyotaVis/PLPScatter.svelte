@@ -8,6 +8,8 @@
 
   let { games, width = 1240, height = 420 }: Props = $props();
   let minimumReviews = $state(0);
+  let minimumPrice = $state(0);
+  let maximumPrice = $state(100);
   let selectedPoint = $state<SelectedPoint | null>(null);
   let gameType = $state<GameType>('all');
   type PlotMode = 'points' | 'hexbin';
@@ -51,20 +53,12 @@
   const playtimeLimit = 166.7 * 60;
   const sentimentLimit = 100;
   type PlotZoom = { x: [number, number]; y: [number, number] };
-  const reviewHexbinDomain: PlotZoom = { x: [2.3, 47.2], y: [5_200, 50_000] };
-  const playtimeHexbinDomain: PlotZoom = { x: [12.45, 32.55], y: [325, 2_345] };
   let reviewsZoom = $state<PlotZoom | null>(null);
   let playtimeZoom = $state<PlotZoom | null>(null);
   let sentimentZoom = $state<PlotZoom | null>(null);
   function resetPlotZoom() {
     reviewsZoom = null;
     playtimeZoom = null;
-    sentimentZoom = null;
-    selectedPoint = null;
-  }
-  function showFullRange() {
-    reviewsZoom = { x: [0, priceLimit], y: [0, reviewLimit] };
-    playtimeZoom = { x: [0, priceLimit], y: [0, playtimeLimit] };
     sentimentZoom = null;
     selectedPoint = null;
   }
@@ -109,14 +103,14 @@
   }
   // Keep the threshold range independent of zoom and the active threshold.
   const thresholdMax = $derived(Math.max(1, Math.round(d3.quantile(sampledPoints.map(({ game }) => reviewCount(game)), 0.75) ?? 1)));
-  const reviewsX = $derived(d3.scaleLinear().domain(reviewsZoom?.x ?? (hexbinMode ? reviewHexbinDomain.x : [0, priceLimit])).range([0, plotWidth]));
-  const playtimePriceX = $derived(d3.scaleLinear().domain(playtimeZoom?.x ?? (hexbinMode ? playtimeHexbinDomain.x : [0, priceLimit])).range([0, plotWidth]));
-  const reviewsY = $derived(d3.scaleLinear().domain(reviewsZoom?.y ?? (hexbinMode ? reviewHexbinDomain.y : [0, reviewLimit])).range([plotHeight, 0]));
+  const reviewsX = $derived(d3.scaleLinear().domain(reviewsZoom?.x ?? [0, priceLimit]).range([0, plotWidth]));
+  const playtimePriceX = $derived(d3.scaleLinear().domain(playtimeZoom?.x ?? [0, priceLimit]).range([0, plotWidth]));
+  const reviewsY = $derived(d3.scaleLinear().domain(reviewsZoom?.y ?? [0, reviewLimit]).range([plotHeight, 0]));
   const sentimentBaseX = $derived(d3.scaleLog().domain([1, Math.max(10, maxReviews)]).nice());
   const reviewCountX = $derived(d3.scaleLog().domain(sentimentZoom?.x ?? sentimentBaseX.domain()).range([0, plotWidth]));
   const sentimentY = $derived(d3.scaleLinear().domain(sentimentZoom?.y ?? [0, sentimentLimit]).range([plotHeight, 0]));
   const reviewCountTicks = $derived(reviewCountX.ticks(5));
-  const playtimeY = $derived(d3.scaleLinear().domain(playtimeZoom?.y ?? (hexbinMode ? playtimeHexbinDomain.y : [0, playtimeLimit])).range([plotHeight, 0]));
+  const playtimeY = $derived(d3.scaleLinear().domain(playtimeZoom?.y ?? [0, playtimeLimit]).range([plotHeight, 0]));
   const reviewPriceTicks = $derived(reviewsX.ticks(5));
   const playtimePriceTicks = $derived(playtimePriceX.ticks(5));
   const reviewTicks = $derived(reviewsY.ticks(5));
@@ -124,10 +118,27 @@
   const playtimeTicks = $derived(playtimeY.ticks(5));
 
   const meetsReviewThreshold = (game: SteamGame) => reviewCount(game) >= minimumReviews;
-  const rangePoints = $derived(sampledPoints.filter(({ game }) => meetsReviewThreshold(game) && matchesGameType(game)));
+  const rangePoints = $derived(sampledPoints.filter(({ game }) =>
+    meetsReviewThreshold(game) && game.price_no_sales >= minimumPrice && game.price_no_sales <= maximumPrice && matchesGameType(game)));
   function setMinimumReviews(value: number) {
     if (!Number.isFinite(value)) return;
     minimumReviews = Math.round(Math.max(0, Math.min(value, thresholdMax)));
+    reviewsZoom = null;
+    playtimeZoom = null;
+    sentimentZoom = null;
+    selectedPoint = null;
+  }
+  function setMaximumPrice(value: number) {
+    if (!Number.isFinite(value)) return;
+    maximumPrice = Math.round(Math.max(minimumPrice, Math.min(value, priceLimit)));
+    reviewsZoom = null;
+    playtimeZoom = null;
+    sentimentZoom = null;
+    selectedPoint = null;
+  }
+  function setMinimumPrice(value: number) {
+    if (!Number.isFinite(value)) return;
+    minimumPrice = Math.round(Math.max(0, Math.min(value, maximumPrice)));
     reviewsZoom = null;
     playtimeZoom = null;
     sentimentZoom = null;
@@ -349,10 +360,9 @@
   </div>
 
   <p class="selection-help">{#if hexbinMode}Each hexagon groups nearby games. Darker hexagons contain more games. Each row uses a shared count scale. Hover over a hexagon for counts and averages.{:else}Click a point to compare that game across all plots. Click it again or clear the selection to deselect.{/if}</p>
-  <p class="selection-help">All three plots use the same sample of 40% of eligible indie games and 40% of eligible non-indie games.{#if hexbinMode} Choose Show full range to use the same axis limits as Points view.{/if}</p>
+  <p class="selection-help">All three plots use the same sample of 40% of eligible indie games and 40% of eligible non-indie games.</p>
   <p class="selection-help">Scroll over either panel to zoom both panels in that row.</p>
   <div class="plot-controls">
-    {#if hexbinMode}<button onclick={showFullRange}>Show full range</button>{/if}
     <button onclick={resetPlotZoom}>Reset all plots zoom</button>
     {#each plotModes as mode (mode.value)}
       <button aria-pressed={plotMode === mode.value} onclick={() => changePlotMode(mode.value)}>{mode.label}</button>
@@ -570,6 +580,21 @@
         value={minimumReviews} aria-valuetext={`At least ${minimumReviews.toLocaleString()} total reviews`}
         oninput={(event) => setMinimumReviews(event.currentTarget.valueAsNumber)} />
       <div class="threshold-endpoints"><span>0</span><span>{thresholdMax.toLocaleString()} reviews (Q3)</span></div>
+      <div class="price-threshold">
+        <div class="threshold-heading">
+          <span><label for="minimum-price">Price range</label></span>
+          <span aria-live="polite">${minimumPrice.toFixed(0)}–${maximumPrice.toFixed(0)} &middot; {rangePoints.length.toLocaleString()} matching games</span>
+          <button onclick={() => { setMinimumPrice(0); setMaximumPrice(priceLimit); }}>Reset price</button>
+        </div>
+        <p>Set the minimum and maximum prices to show games within this range across all three plots.</p>
+        <input id="minimum-price" class="threshold-slider" type="range" min="0" max={priceLimit} step="1"
+          value={minimumPrice} aria-label="Minimum price" aria-valuetext={`Minimum price $${minimumPrice.toFixed(0)}`}
+          oninput={(event) => setMinimumPrice(event.currentTarget.valueAsNumber)} />
+        <input id="maximum-price" class="threshold-slider" type="range" min="0" max={priceLimit} step="1"
+          value={maximumPrice} aria-label="Maximum price" aria-valuetext={`Maximum price $${maximumPrice.toFixed(0)}`}
+          oninput={(event) => setMaximumPrice(event.currentTarget.valueAsNumber)} />
+        <div class="threshold-endpoints"><span>$0 minimum</span><span>${priceLimit} maximum</span></div>
+      </div>
     </div>
   {/if}
   <section class="analysis" aria-label="Scatterplot analysis">
@@ -601,14 +626,16 @@
   .header { display: block; }
   h2 { margin: 0 0 0.25rem; }
   .legend span { display: inline-flex; align-items: center; gap: 0.3rem; color: #243247; font-size: 0.78rem; white-space: nowrap; }
-  .review-threshold { margin-top: 24px; padding: 16px; border: 1px solid #cbd5e1; border-radius: 6px; }
-  .threshold-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+  .review-threshold { margin-top: 16px; padding: 10px 12px; border: 1px solid #cbd5e1; border-radius: 6px; }
+  .threshold-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
   .threshold-heading label { font-weight: 700; }
-  .threshold-heading span, .review-threshold p, .threshold-endpoints { font-size: 0.8rem; color: #475569; }
-  .threshold-heading button { margin-left: auto; padding: 5px 10px; border: 1px solid #94a3b8; border-radius: 4px; background: white; cursor: pointer; }
-  .threshold-slider { width: 100%; margin: 12px 0; accent-color: #0284c7; cursor: pointer; }
+  .threshold-heading span, .review-threshold p, .threshold-endpoints { font-size: 0.75rem; color: #475569; }
+  .threshold-heading button { margin-left: auto; padding: 3px 8px; border: 1px solid #94a3b8; border-radius: 4px; background: white; cursor: pointer; font-size: 0.75rem; }
+  .review-threshold p { margin: 4px 0; }
+  .threshold-slider { width: 100%; height: 1rem; margin: 4px 0; accent-color: #0284c7; cursor: pointer; }
   .threshold-slider:focus-visible { outline: 2px solid #0284c7; outline-offset: 4px; }
   .threshold-endpoints { display: flex; justify-content: space-between; }
+  .price-threshold { margin-top: 10px; padding-top: 10px; border-top: 1px solid #e2e8f0; }
   .legend { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; margin: 0.75rem 0 0.25rem; }
   .swatch { width: 0.7rem; height: 0.7rem; border-radius: 50%; }
   .swatch.indie { background: #ea580c; }

@@ -6,9 +6,11 @@
   let { games, width = 620, height = 420 }: Props = $props();
   let metric = $state<'reviews' | 'sales'>('reviews');
   let merged = $state(false);
+  let selectedCell = $state<{ rowIndex: number; columnIndex: number } | null>(null);
   let chartScroll = $state<HTMLDivElement>();
   function toggleMerge() {
     merged = !merged;
+    selectedCell = null;
     if (merged && chartScroll) {
       chartScroll.scrollTo({
         left: (chartScroll.scrollWidth - chartScroll.clientWidth) / 2,
@@ -25,6 +27,10 @@
     return bounds.length === 2 && bounds.every((value) => Number.isFinite(value) && value >= 0)
       ? (bounds[0] + bounds[1]) / 2 : null;
   };
+  const totalReviews = (game: SteamGame) => game.positive_reviews + game.negative_reviews;
+  const gameMetricValue = (game: SteamGame): number | null => metric === 'reviews'
+    ? totalReviews(game) > 0 ? game.positive_reviews / totalReviews(game) : null
+    : owners(game);
   const genres = [
     'Action',
     'Adventure',
@@ -51,7 +57,13 @@
       const value = metric === 'reviews'
         ? reviews > 0 ? positive / reviews : null
         : totalOwners > 0 && (matching.length === 0 || hasOwners) ? estimatedOwners / totalOwners : null;
-      return { label, count: matching.length, value, reviews, estimatedOwners };
+      const topGame = matching
+        .filter((game) => gameMetricValue(game) !== null)
+        .reduce<SteamGame | null>((best, game) => {
+          if (!best) return game;
+          return (gameMetricValue(game) ?? -Infinity) > (gameMetricValue(best) ?? -Infinity) ? game : best;
+        }, null);
+      return { label, count: matching.length, value, reviews, estimatedOwners, topGame };
     }) };
     }) };
   }));
@@ -91,6 +103,19 @@
     const rounded = Number((delta * 100).toFixed(1));
     return `${rounded > 0 ? '+' : ''}${rounded.toFixed(1)} pp`;
   };
+  const selectedCellInfo = $derived.by(() => {
+    if (!selectedCell) return null;
+    const selection = selectedCell;
+    return panels.map((panel) => {
+      const row = panel.rows[selection.rowIndex];
+      const clicked = row.cells[selection.columnIndex];
+      const highest = row.cells
+        .filter((cell) => cell.value !== null)
+        .reduce<(typeof row.cells)[number] | null>((best, cell) =>
+          best === null || (cell.value ?? -Infinity) > (best.value ?? -Infinity) ? cell : best, null);
+      return { label: panel.label, row, clicked, highest };
+    });
+  });
 </script>
 
 <section class="genre-price">
@@ -142,7 +167,7 @@
           {#each row.cells as cell, columnIndex}
             <g>
               <title>{row.genre} · {cell.label}: {cell.value === null ? 'No data' : percent(cell.value)}; {cell.count} games; {metric === 'reviews' ? `${cell.reviews.toLocaleString()} reviews` : `${cell.estimatedOwners.toLocaleString()} estimated owners`}</title>
-              <rect x={left + columnIndex * cellWidth} y={top + rowIndex * rowHeight} width={cellWidth - 3} height={rowHeight - 3} rx="3" fill={cell.value === null ? '#e5e7eb' : interpolateBlues(colorPosition(cell.value))} />
+              <rect class:selected={selectedCell?.rowIndex === rowIndex && selectedCell?.columnIndex === columnIndex} x={left + columnIndex * cellWidth} y={top + rowIndex * rowHeight} width={cellWidth - 3} height={rowHeight - 3} rx="3" fill={cell.value === null ? '#e5e7eb' : interpolateBlues(colorPosition(cell.value))} role="button" tabindex="0" aria-label={`${row.genre}, ${cell.label}: ${cell.value === null ? 'No data' : percent(cell.value)}`} aria-pressed={selectedCell?.rowIndex === rowIndex && selectedCell?.columnIndex === columnIndex} onclick={() => { if (!merged) selectedCell = { rowIndex, columnIndex }; }} onkeydown={(event) => { if ((event.key === 'Enter' || event.key === ' ') && !merged) { event.preventDefault(); selectedCell = { rowIndex, columnIndex }; } }} />
               <text x={left + (columnIndex + 0.5) * cellWidth - 1.5} y={top + rowIndex * rowHeight + (rowHeight - 3) / 2} dominant-baseline="middle" text-anchor="middle" fill={cell.value !== null && colorPosition(cell.value) > 0.6 ? 'white' : '#172033'}>{cell.value === null ? '—' : percent(cell.value)}</text>
             </g>
           {/each}
@@ -173,6 +198,29 @@
       </div>
       </div>
     </div>
+  {/if}
+  {#if selectedCellInfo && !merged}
+    <aside class="cell-details" aria-live="polite">
+      <div class="cell-details-heading">
+        <div>
+          <h3>{selectedCellInfo[0].row.genre} price details</h3>
+          <p>Clicked cell: {selectedCellInfo[0].clicked.label}</p>
+        </div>
+        <button type="button" onclick={() => selectedCell = null}>Clear selection</button>
+      </div>
+      <div class="cell-details-grid">
+        {#each selectedCellInfo as info}
+          <div class="cell-detail">
+            <strong>{info.label}</strong>
+            {#if info.highest?.topGame}
+              <span>Top game: {info.highest.topGame.name}</span>
+            {:else}
+              <span>Top game: No data</span>
+            {/if}
+          </div>
+        {/each}
+      </div>
+    </aside>
   {/if}
   <section class="analysis" aria-label="Heatmap analysis">
     <h3>Analysis</h3>
@@ -215,6 +263,16 @@
   svg { display: block; width: 100%; height: auto; font-family: inherit; font-size: 12px; }
   .column-label { font-weight: 600; fill: #243247; }
   .row-label { fill: #243247; }
+  .heatmap-panel rect[role="button"] { cursor: pointer; }
+  .heatmap-panel rect[role="button"]:focus-visible { outline: 2px solid #172033; outline-offset: 2px; }
+  .heatmap-panel rect[role="button"].selected { stroke: #172033; stroke-width: 2; }
+  .cell-details { margin-top: 16px; padding: 12px; border: 1px solid #94a3b8; border-radius: 6px; }
+  .cell-details-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+  .cell-details h3 { margin: 0; text-align: left; }
+  .cell-details p { margin: 4px 0 0; color: #475569; font-size: 0.85rem; }
+  .cell-details button { padding: 5px 10px; border: 1px solid #94a3b8; border-radius: 4px; background: white; cursor: pointer; }
+  .cell-details-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }
+  .cell-detail { display: grid; gap: 4px; padding: 10px; background: #f8fafc; color: #243247; font-size: 0.85rem; }
   @media (max-width: 560px) {
     .chart-header, .control-row { flex-wrap: wrap; }
   }
